@@ -640,7 +640,7 @@ export async function scanDir(dir: string, options: ScanOptions = {}): Promise<S
     const lines = text.split("\n");
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
-      if (!line || line.length > 4000) continue;
+      if (!line || line.length > 100_000) continue; // skip pathological/minified blobs
       for (const hit of detectInLine(line, brandTokens)) {
         const kind = classifyKind(rel, line);
         findings.push({
