@@ -1,7 +1,7 @@
 {
   "name": "relabeld",
-  "version": "0.1.0",
-  "description": "White-label any self-hosted app with one command \u2014 deterministic, verified, agent-agnostic.",
+  "version": "1.0.0",
+  "description": "White-label any self-hosted app with one command — deterministic, verified, agent-agnostic.",
   "type": "module",
   "bin": {
     "relabeld": "dist/cli.js"
@@ -48,5 +48,13 @@
   "devDependencies": {
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2"
+  },
+  "author": {
+    "name": "Muneeb Anjum",
+    "email": "horizonbymuneeb@users.noreply.github.com",
+    "url": "https://github.com/horizonbymuneeb"
+  },
+  "bugs": {
+    "url": "https://github.com/horizonbymuneeb/relabel/issues"
   }
 }
