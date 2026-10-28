@@ -1,0 +1,10 @@
+/* Pulse Status — brand sheet */
+:root {
+  --brand-name: "Pulse Status";
+  --brand-primary: #0ea5e9;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+}

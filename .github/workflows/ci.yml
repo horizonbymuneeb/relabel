@@ -32,7 +32,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The suite is TypeScript (test/**/*.test.ts): Node >= 22.18 strips types
+      # natively and supports glob positional args. Node 20 still builds and
+      # pack-checks in this lane; install the suite deps and run it on 22.
       - name: Test
+        if: matrix.node-version != 20
         run: npm test
 
       - name: Pack check

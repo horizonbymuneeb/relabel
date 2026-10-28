@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>relabeld demo — a self-hosted app, rebranded and verified</title>
+<style>
+  :root {
+    --bg: #f6f6f4;
+    --surface: #ffffff;
+    --ink: #17181c;
+    --muted: #5b5f68;
+    --line: #e2e3e6;
+    --line-strong: #c9cbd1;
+    --pass: #1d6b4d;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+    text-rendering: optimizeLegibility;
+  }
+
+  a { color: var(--ink); text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--ink); }
+
+  .page { max-width: 1120px; margin: 0 auto; padding: 0 24px 72px; }
+
+  header.masthead {
+    padding: 56px 0 28px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 14px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(30px, 4.4vw, 44px);
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    font-weight: 640;
+    max-width: 22ch;
+  }
+
+  .lede {
+    margin: 16px 0 0;
+    max-width: 62ch;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin: 28px 0 0;
+  }
+
+  .fact { background: var(--surface); padding: 14px 16px; }
+  .fact dt {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 4px;
+  }
+  .fact dd { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
+
+  section { padding: 48px 0 0; }
+
+  h2 {
+    margin: 0 0 6px;
+    font-size: 19px;
+    letter-spacing: -0.01em;
+    font-weight: 620;
+  }
+
+  .section-note {
+    margin: 0 0 24px;
+    color: var(--muted);
+    font-size: 14px;
+    max-width: 70ch;
+  }
+
+  .pair {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+  }
+
+  figure.shot {
+    margin: 0;
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+
+  .shot-label {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .shot-label .state { color: var(--muted); }
+  .shot-label .dims { color: var(--muted); font-variant-numeric: tabular-nums; letter-spacing: 0.04em; }
+
+  .shot img {
+    display: block;
+    width: 100%;
+    height: auto;
+    background: #eceef1;
+  }
+
+  .mobile-pair { margin-top: 20px; }
+  .mobile-pair figure.shot { max-width: 390px; }
+  .mobile-pair .shot img { width: 100%; }
+
+  table.checks {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    font-size: 14px;
+  }
+
+  table.checks th,
+  table.checks td {
+    text-align: left;
+    vertical-align: top;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  table.checks thead th {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    background: #fbfbfa;
+  }
+
+  table.checks tbody tr:last-child td { border-bottom: 0; }
+
+  td.id, .mono { font-family: var(--mono); font-size: 12.5px; }
+  td.status { white-space: nowrap; font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+  td.status.pass { color: var(--pass); }
+
+  .callout {
+    margin: 22px 0 0;
+    padding: 14px 16px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--ink);
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .callout strong { color: var(--ink); font-weight: 600; }
+
+  pre {
+    margin: 0 0 16px;
+    padding: 16px 18px;
+    background: #17181c;
+    color: #e8e9eb;
+    border-radius: 2px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.62;
+  }
+
+  pre .c { color: #9aa0a8; }
+
+  .artifacts { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  .artifacts li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    justify-content: space-between;
+    padding: 11px 2px;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+  }
+  .artifacts .path { font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+
+  footer.foot {
+    margin-top: 56px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  @media (max-width: 760px) {
+    header.masthead { padding: 36px 0 22px; }
+    .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .pair { grid-template-columns: minmax(0, 1fr); }
+    .mobile-pair .pair { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    section { padding-top: 36px; }
+    table.checks th:nth-child(3), table.checks td:nth-child(3) { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">relabeld demo</p>
+    <h1>A self-hosted status page, rebranded and verified</h1>
+    <p class="lede">
+      The upstream app runs unchanged. <span class="mono">relabeld</span> patches its brand surfaces
+      from one <span class="mono">brand.yaml</span>, then proves the served result in headless Chromium:
+      no old-brand strings, the new name in the page title, no console errors, no horizontal overflow at
+      desktop or mobile widths.
+    </p>
+
+    <dl class="facts">
+      <div class="fact"><dt>App</dt><dd>Uptime Kuma</dd></div>
+      <div class="fact"><dt>Viewports</dt><dd>1440 &times; 980 / 390 &times; 844</dd></div>
+      <div class="fact"><dt>Engine</dt><dd>headless Chromium</dd></div>
+      <div class="fact"><dt>Gate</dt><dd>7 checks, exit code</dd></div>
+    </dl>
+  </header>
+
+  <section aria-labelledby="evidence">
+    <h2 id="evidence">Before and after</h2>
+    <p class="section-note">
+      Same page, same content, same viewport. The only difference is the brand: strings, title, palette,
+      logo and favicon. Screenshots are captured by <span class="mono">relabeld verify</span> at the two
+      gate viewports.
+    </p>
+
+    <div class="pair">
+      <figure class="shot">
+        <div class="shot-label"><span class="state">Before</span><span class="dims">1440 &times; 980</span></div>
+        <img src="../shots/before-desktop-1440x980.png" width="1440" height="980"
+             alt="Upstream status page at desktop width, showing the original product name.">
+      </figure>
+      <figure class="shot">
+        <div class="shot-label"><span class="state">After</span><span class="dims">1440 &times; 980</span></div>
+        <img src="../shots/after-desktop-1440x980.png" width="1440" height="980"
+             alt="The same status page after relabeld applied the new brand, at desktop width.">
+      </figure>
+    </div>
+
+    <div class="mobile-pair">
+      <div class="pair">
+        <figure class="shot">
+          <div class="shot-label"><span class="state">Before</span><span class="dims">390 &times; 844</span></div>
+          <img src="../shots/before-mobile-390x844.png" width="390" height="844"
+               alt="Upstream status page at mobile width.">
+        </figure>
+        <figure class="shot">
+          <div class="shot-label"><span class="state">After</span><span class="dims">390 &times; 844</span></div>
+          <img src="../shots/after-mobile-390x844.png" width="390" height="844"
+               alt="Rebranded status page at mobile width.">
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="checks">
+    <h2 id="checks">The gate</h2>
+    <p class="section-note">
+      <span class="mono">relabeld verify</span> runs seven checks over the live page and exits non-zero
+      if any fails. The table is the contract, not a summary of intent.
+    </p>
+
+    <table class="checks">
+      <thead>
+        <tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">What it proves</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="id">brand-strings</td>
+          <td class="status pass">pass</td>
+          <td>Zero occurrences of the upstream brand variants in the rendered DOM text or page HTML.</td>
+        </tr>
+        <tr>
+          <td class="id">brand-title</td>
+          <td class="status pass">pass</td>
+          <td>The new brand name appears in <span class="mono">&lt;title&gt;</span>.</td>
+        </tr>
+        <tr>
+          <td class="id">console-errors</td>
+          <td class="status pass">pass</td>
+          <td>No page errors and no console messages of type error.</td>
+        </tr>
+        <tr>
+          <td class="id">overflow-desktop</td>
+          <td class="status pass">pass</td>
+          <td><span class="mono">scrollWidth - innerWidth = 0</span> at 1440 &times; 980.</td>
+        </tr>
+        <tr>
+          <td class="id">overflow-mobile</td>
+          <td class="status pass">pass</td>
+          <td>Same assertion at 390 &times; 844.</td>
+        </tr>
+        <tr>
+          <td class="id">screenshots</td>
+          <td class="status pass">pass</td>
+          <td>Desktop and mobile screenshots written to the configured output directory.</td>
+        </tr>
+        <tr>
+          <td class="id">favicon</td>
+          <td class="status pass">pass</td>
+          <td>Favicon responds 200 and its sha256 matches the brand asset.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="callout">
+      <strong>Evidence on disk.</strong> The raw result is <span class="mono">demo/reports/verify.json</span>;
+      the self-contained HTML report is <span class="mono">demo/reports/report.html</span>. Both are
+      generated by the commands below, from the same run that produced the screenshots above.
+    </p>
+  </section>
+
+  <section aria-labelledby="reproduce">
+    <h2 id="reproduce">Reproduce it</h2>
+    <p class="section-note">
+      Run from the repository root after <span class="mono">npm ci &amp;&amp; npm run build</span>.
+    </p>
+
+<pre><code><span class="c"># 1. detect brand surfaces (read-only)</span>
+node dist/cli.js scan ./app --json &gt; scan.json
+
+<span class="c"># 2. write the brand spec</span>
+node dist/cli.js init ./app --name "Nova Status" --domain status.example.com
+
+<span class="c"># 3. inspect the plan, then patch strings, assets and the compose override</span>
+node dist/cli.js apply ./app --brand ./app/brand.yaml --dry-run
+node dist/cli.js apply ./app --brand ./app/brand.yaml
+
+<span class="c"># 4. prove the served page at both viewports</span>
+node dist/cli.js verify --url &lt;app-url&gt; --brand ./app/brand.yaml --json --out verify.json
+
+<span class="c"># 5. render the proof as one self-contained HTML file</span>
+node dist/cli.js report --input verify.json --out report.html</code></pre>
+  </section>
+
+  <section aria-labelledby="artifacts">
+    <h2 id="artifacts">Artifacts</h2>
+    <p class="section-note">Everything in this page is a file in the repository; nothing is fetched from the network.</p>
+    <ul class="artifacts">
+      <li><a href="../shots/before-desktop-1440x980.png">Before, desktop</a><span class="path">demo/shots/before-desktop-1440x980.png</span></li>
+      <li><a href="../shots/after-desktop-1440x980.png">After, desktop</a><span class="path">demo/shots/after-desktop-1440x980.png</span></li>
+      <li><a href="../shots/before-mobile-390x844.png">Before, mobile</a><span class="path">demo/shots/before-mobile-390x844.png</span></li>
+      <li><a href="../shots/after-mobile-390x844.png">After, mobile</a><span class="path">demo/shots/after-mobile-390x844.png</span></li>
+      <li><a href="../reports/verify.json">Verification JSON</a><span class="path">demo/reports/verify.json</span></li>
+      <li><a href="../reports/report.html">HTML report</a><span class="path">demo/reports/report.html</span></li>
+    </ul>
+  </section>
+
+  <footer class="foot">
+    <span>relabeld v0.1.0 — deterministic white-labelling with proof.</span>
+    <span>MIT. Screenshots and reports captured by the CLI, not by hand.</span>
+  </footer>
+
+</div>
+</body>
+</html>

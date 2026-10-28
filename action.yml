@@ -22,16 +22,16 @@ inputs:
     description: "Optional Chrome DevTools Protocol endpoint to reuse instead of launching Chromium."
     required: false
   report:
-    description: "Optional output path for the self-contained HTML report."
+    description: "Optional output path for the self-contained HTML report (uploaded as an artifact)."
     required: false
   fail-on:
-    description: "Comma-separated checks that should fail the gate."
+    description: "Comma-separated check groups that should fail the gate (brand, console, overflow, favicon, screenshot)."
     required: false
     default: "brand,console,overflow"
 
 outputs:
   report:
-    description: "Path to the uploaded HTML report (empty when not requested)."
+    description: "Path of the uploaded HTML report (empty when not requested)."
     value: ${{ inputs.report }}
 
 runs:
@@ -42,6 +42,8 @@ runs:
       with:
         node-version: "20"
 
+    # `verify --json` is the gate. The JSON proof is also persisted so the
+    # optional HTML report and the fail-on policy can consume it.
     - name: Verify brand
       id: verify
       shell: bash
@@ -50,34 +52,99 @@ runs:
         INPUT_BRAND: ${{ inputs.brand }}
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_CDP: ${{ inputs.cdp }}
-        INPUT_REPORT: ${{ inputs.report }}
-        INPUT_FAIL_ON: ${{ inputs.fail-on }}
       run: |
         set -uo pipefail
 
-        args=(verify --url "$INPUT_URL" --brand "$INPUT_BRAND" --json --fail-on "$INPUT_FAIL_ON")
+        json_path="${RUNNER_TEMP:-/tmp}/relabel-verify.json"
+        echo "json_path=$json_path" >> "$GITHUB_OUTPUT"
+
+        args=(verify --url "$INPUT_URL" --brand "$INPUT_BRAND" --json --out "$json_path")
         if [ -n "${INPUT_CDP:-}" ]; then
           args+=(--cdp "$INPUT_CDP")
         fi
-        if [ -n "${INPUT_REPORT:-}" ]; then
-          args+=(--report "$INPUT_REPORT")
-        fi
 
         set +e
-        output="$(npx -y "relabeld@${INPUT_VERSION}" "${args[@]}" 2>&1)"
+        npx -y "relabeld@${INPUT_VERSION}" "${args[@]}"
         code=$?
         set -e
 
-        if [ "$code" -eq 0 ]; then
-          echo "$output"
+        if [ ! -s "$json_path" ]; then
+          echo "::error::relabel verify produced no JSON proof (exit $code)"
+          exit "$code"
+        fi
+        if [ "$code" -ne 0 ]; then
+          echo "::group::relabel verify JSON"
+          cat "$json_path"
+          echo "::endgroup::"
+        fi
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+
+    # fail-on maps check ids by group prefix: brand -> brand-title/brand-strings,
+    # console -> console-errors, overflow -> overflow, etc.
+    - name: Apply fail-on policy
+      shell: bash
+      env:
+        VERIFY_JSON: ${{ steps.verify.outputs.json_path }}
+        VERIFY_CODE: ${{ steps.verify.outputs.code }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -euo pipefail
+
+        node - "$VERIFY_JSON" "$INPUT_FAIL_ON" "$VERIFY_CODE" <<'NODE'
+        const fs = require("node:fs");
+        // argv[0] = node, argv[1] = "-" (stdin script); real args start at 2.
+        const [file, failOn, verifyCode] = process.argv.slice(2);
+        let result;
+        try {
+          result = JSON.parse(fs.readFileSync(file, "utf8"));
+        } catch (err) {
+          console.error(`::error::cannot parse verify JSON: ${err.message}`);
+          process.exit(2);
+        }
+        const checks = Array.isArray(result.checks) ? result.checks : [];
+        const failed = checks.filter((c) => c.status === "fail").map((c) => c.id);
+        const groups = String(failOn || "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const hits = failed.filter((id) =>
+          groups.some((g) => id === g || id.startsWith(`${g}-`) || id.split("-")[0] === g),
+        );
+        const summary = result.summary || {};
+        console.log(
+          `relabel verify: passed=${summary.passed ?? "?"} failed=${summary.failed ?? failed.length} skipped=${summary.skipped ?? "?"} (exit ${verifyCode || 0})`,
+        );
+        if (failed.length > 0) {
+          console.log(`failed checks: ${failed.join(", ")}`);
+        }
+        if (failed.length === 0) {
+          console.log("gate: pass");
+          process.exit(0);
+        }
+        if (hits.length === 0) {
+          console.log(
+            `::warning::failed checks [${failed.join(", ")}] are outside fail-on (${groups.join(", ") || "none"}); gate passes`,
+          );
+          process.exit(0);
+        }
+        console.error(`::error::failed checks matched fail-on: ${hits.join(", ")}`);
+        process.exit(1);
+        NODE
+
+    - name: Build HTML report
+      if: always() && inputs.report != ''
+      shell: bash
+      env:
+        INPUT_REPORT: ${{ inputs.report }}
+        INPUT_VERSION: ${{ inputs.version }}
+        VERIFY_JSON: ${{ steps.verify.outputs.json_path }}
+      run: |
+        set -euo pipefail
+        if [ ! -s "${VERIFY_JSON:-}" ]; then
+          echo "::warning::no verify JSON available; skipping report"
           exit 0
         fi
-
-        echo "::error::relabel verify failed (exit $code)"
-        echo "::group::relabel verify JSON"
-        echo "$output"
-        echo "::endgroup::"
-        exit 1
+        npx -y "relabeld@${INPUT_VERSION}" report --input "$VERIFY_JSON" --out "$INPUT_REPORT" --json
 
     - name: Upload report
       if: always() && inputs.report != ''

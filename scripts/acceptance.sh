@@ -11,7 +11,7 @@ npm run build >/tmp/relabel-build.log 2>&1; check $? "tsc build clean"
 tail -3 /tmp/relabel-build.log
 
 step "tests"
-node --test test/ >/tmp/relabel-test.log 2>&1; check $? "node --test test/"
+node --test "test/**/*.test.ts" >/tmp/relabel-test.log 2>&1; check $? "node --test test/"
 grep -E "^# (pass|fail|tests)" /tmp/relabel-test.log | tail -3
 
 step "cli version/help"

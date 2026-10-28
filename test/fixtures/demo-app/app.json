@@ -1,0 +1,5 @@
+{
+  "name": "Pulse Status",
+  "description": "Pulse Status demo app for relabeld fixtures",
+  "port": 3001
+}

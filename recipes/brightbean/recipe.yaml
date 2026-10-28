@@ -1,0 +1,54 @@
+id: brightbean
+name: BrightBean Studio
+upstream: https://github.com/brightbeanxyz/brightbean-studio
+docs: https://github.com/brightbeanxyz/brightbean-studio#readme
+match:
+  - config/settings/
+  - templates/
+  - static/
+  - theme/
+  - apps/accounts/migrations/
+  - app.json
+  - package.json
+  - compose.selfhost.yaml
+  - docker-compose.yml
+  - docker-compose.prod.yml
+  - .github/
+strings:
+  - BrightBean Studio
+  - BrightBean
+  - Brightbean
+  - brightbean
+  - brightbean-studio
+  - brightbeanxyz
+  - studio.brightbean.xyz
+assets:
+  - kind: logo
+    targets:
+      - static/img/nova-logo.svg
+      - static/img/nova-logo.webp
+      - .github/assets/brightbean-studio-logo.webp
+  - kind: favicon
+    targets:
+      - static/favicon/favicon.ico
+      - static/favicon/favicon.svg
+      - static/favicon/apple-touch-icon.png
+      - static/favicon/favicon-96x96.png
+compose:
+  service: app
+  port: 8000
+  base: compose.selfhost.yaml
+verify:
+  url: http://localhost:8000
+  paths:
+    - /
+    - /accounts/login/
+notes:
+  - LICENSE is AGPL-3.0; upstream attribution must survive any rebrand — never rewrite LICENSE or copyright lines.
+  - Django admin title/header are UNFOLD["SITE_TITLE"] and UNFOLD["SITE_HEADER"] in config/settings/base.py.
+  - templates/base.html holds <title> plus the sidebar wordmark; static/favicon/site.webmanifest holds name/short_name.
+  - apps/accounts/migrations/0004_set_site_brightbean.py seeds django.contrib.sites name/domain — add a new migration instead of editing an applied one.
+  - App metadata lives in package.json (brightbean-studio), app.json, README.md alt text and .github/assets screenshots.
+  - README.md already points at .github/assets/nova-logo.webp while the shipped file is still .github/assets/brightbean-studio-logo.webp; rename it as part of the asset pass.
+  - theme/static_src/src/styles.css carries the brand palette tokens; theme/static/brand/ holds third-party platform icons that are not the app brand.
+  - compose.selfhost.yaml declares a top-level project name (brightbean) and services app/worker/migrate/postgres on port 8000.

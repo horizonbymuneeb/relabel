@@ -1,0 +1,41 @@
+id: uptime-kuma
+name: Uptime Kuma
+upstream: https://github.com/louislam/uptime-kuma
+docs: https://github.com/louislam/uptime-kuma/wiki
+match:
+  - package.json
+  - README.md
+  - docker-compose.yml
+  - docker-compose.yaml
+  - src/
+  - server/
+  - public/
+strings:
+  - Uptime Kuma
+  - Uptime-Kuma
+  - uptime-kuma
+  - UPTIME_KUMA
+  - UptimeKuma
+  - louislam/uptime-kuma
+assets:
+  - kind: logo
+    targets:
+      - public/icon.svg
+  - kind: favicon
+    targets:
+      - public/favicon.ico
+compose:
+  service: uptime-kuma
+  port: 3001
+  base: docker-compose.yml
+verify:
+  url: http://localhost:3001
+  paths:
+    - /
+    - /dashboard
+notes:
+  - LICENSE (MIT) must stay untouched; keep upstream copyright lines even after rebranding.
+  - public/icon.svg is the app icon/mask used by the PWA manifest; public/favicon.ico is the tab icon.
+  - The docker-compose service is named uptime-kuma and maps 3001:3001; the image is louislam/uptime-kuma.
+  - package.json name stays uptime-kuma for dependency and update compatibility.
+  - UI strings live in src/lang/*.json plus server/ and src/ components; the page <title> is rendered from the app name.

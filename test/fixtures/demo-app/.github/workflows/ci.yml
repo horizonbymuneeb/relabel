@@ -1,0 +1,10 @@
+name: pulse-status-ci
+on:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t pulse-status .
