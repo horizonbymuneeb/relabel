@@ -13,6 +13,8 @@ export const INIT_USAGE = [
   "Write brand.yaml derived from the repo scan and the given brand.",
   "",
   "  --name <text>        new brand name (required), e.g. \"Nova Demo\"",
+  "  --from <dir>         source directory (alias for the positional [dir];",
+  "                       the positional wins if both are given)",
   "  --domain <host>      public domain, e.g. demo.example.com",
   "  --primary <#hex>     primary brand colour (default #2563EB)",
   "  --accent <#hex>      accent brand colour",
@@ -53,7 +55,7 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     return 0;
   }
   const errors = flagErrors(parsed, [
-    "json", "help", "name", "domain", "primary", "accent", "logo", "favicon", "email-from", "force",
+    "json", "help", "name", "domain", "primary", "accent", "logo", "favicon", "email-from", "force", "from",
   ]);
   if (errors.length || parsed.positionals.length > 1) {
     for (const error of errors) ctx.error(`init: ${error}`);
@@ -62,7 +64,15 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     return 2;
   }
 
-  const root = path.resolve(ctx.cwd, parsed.positionals[0] ?? ".");
+  // --from is the MCP-friendly alias for the positional dir; the positional wins.
+  const fromFlag = flagString(parsed, "from");
+  if (parsed.flags.from !== undefined && !fromFlag) {
+    ctx.error("init: --from requires a directory argument");
+    ctx.error(INIT_USAGE);
+    return 2;
+  }
+  const sourceDir = parsed.positionals[0] ?? fromFlag ?? ".";
+  const root = path.resolve(ctx.cwd, sourceDir);
   const name = flagString(parsed, "name")?.trim();
   if (!name) {
     ctx.error("init: --name is required");

@@ -1,0 +1,8 @@
+services:
+  pulse-status:
+    image: acme/pulse-status:latest
+    container_name: pulse-status
+    ports:
+      - "3001:3001"
+    environment:
+      - APP_NAME=Pulse Status

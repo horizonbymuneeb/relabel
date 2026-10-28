@@ -55,6 +55,16 @@ export interface RecipeAsset {
   targets: string[];
 }
 
+/**
+ * A repo path that must be renamed for rewritten module refs to resolve.
+ * `to` may use brand placeholders: {{slug}}, {{snake}}, {{pascal}}, {{camel}},
+ * {{name}}, {{lower}} (e.g. server/{{slug}}-server.js).
+ */
+export interface RecipeRename {
+  from: string;
+  to: string;
+}
+
 export interface RecipeFileRule {
   path: string;
   replace: Array<{ from: string; to: string }>;
@@ -68,6 +78,7 @@ export interface Recipe {
   match: string[];
   strings: string[];
   assets: RecipeAsset[];
+  renames?: RecipeRename[];
   env?: RecipeEnv[];
   files?: RecipeFileRule[];
   compose?: { service?: string; port?: number; base?: string };

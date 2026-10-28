@@ -244,5 +244,5 @@ relabeld --json scan ./my-app
 | `brand.yaml already exists` | Pass `--force` to `init`, or edit the existing spec. |
 | `verify: cannot read brand spec` (exit 2) | Wrong path; `--brand` resolves against the cwd. |
 | `apply: brand file not found` | Run `init` first, or pass `--brand <path>`. |
-| `--cwd` after the command is rejected | Global options must come before the command: `relabeld --cwd DIR verify ...`. |
+| `verify: Unknown option '--cwd'` | `verify` parses strictly, so global options must come before the command for it: `relabeld --cwd DIR verify ...`. |
 | `doctor` reports `FAIL` | A required check failed: node older than 20 or no chromium/chrome binary. Fix that first; deploy-only warnings (nginx, certbot, Cloudflare token) do not fail the command. |

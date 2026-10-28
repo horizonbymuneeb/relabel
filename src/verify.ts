@@ -22,19 +22,13 @@ const PROBE_EXPR = `(() => {
   const body = document.body;
   const html = document.documentElement;
   const link = document.querySelector('link[rel~="icon"]');
-  let faviconUrl = "";
-  try {
-    faviconUrl = link && link.href ? link.href : new URL("/favicon.ico", location.href).href;
-  } catch {
-    faviconUrl = "";
-  }
   return {
     title: document.title || "",
     text: body ? body.innerText || "" : "",
     html: html ? html.outerHTML || "" : "",
     scrollWidth: html ? html.scrollWidth : 0,
     innerWidth: window.innerWidth,
-    faviconUrl,
+    faviconUrl: link && link.href ? link.href : "",
   };
 })()`;
 
@@ -45,14 +39,29 @@ interface Probe {
   html: string;
   scrollWidth: number;
   innerWidth: number;
+  /** Runtime DOM href of the icon link ("" when absent). */
   faviconUrl?: string;
   navError?: string;
 }
 
 interface FaviconProbe {
   url: string;
+  /** Where the candidate came from: served HTML, rewritten DOM, or /favicon.ico fallback. */
+  source: "html" | "dom" | "fallback";
+  /** "http" = fetched over the network; "data" = decoded inline data URI; "skip" = not verifiable. */
+  kind: "http" | "data" | "skip";
   status: number;
   hash: string | null;
+  error?: string;
+  skipReason?: string;
+}
+
+/** A configured brand image that a served favicon may legitimately match. */
+interface ExpectedBrandAsset {
+  kind: "favicon" | "logo";
+  configured: string;
+  path: string;
+  hash?: string;
   error?: string;
 }
 
@@ -81,6 +90,7 @@ const USAGE = [
   "  --brand <file>      brand spec YAML (default: brand.yaml)",
   "  --shots <dir>       screenshot output dir (default: .relabel/verify)",
   "  --cdp <ws-url>      attach to an existing Chromium over CDP",
+  "  --executable <path> specific Chromium/Chrome binary to launch",
   "  --out <file>        also write the VerifyResult JSON here",
   "  --json              machine-readable output",
   "  -h, --help          show this help",
@@ -125,6 +135,143 @@ function schemeless(url: string): string {
   return url.replace(/^https?:\/\//i, "");
 }
 
+/** Read one attribute value from a raw HTML tag string (quoted or unquoted). */
+export function attrValue(tag: string, name: string): string | null {
+  const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
+  const match = re.exec(tag);
+  if (!match) return null;
+  return match[1] ?? match[2] ?? match[3] ?? null;
+}
+
+/**
+ * Find the first `<link rel="icon">` href in the RAW served HTML (i.e. before any JS
+ * rewrites it) and resolve it against the page URL. `apple-touch-icon` is not an icon link.
+ */
+export function parseIconLinkHref(html: string, baseUrl: string): string | null {
+  const linkRe = /<link\b[^>]*>/gi;
+  for (const match of html.matchAll(linkRe)) {
+    const tag = match[0];
+    const rel = attrValue(tag, "rel");
+    if (!rel) continue;
+    if (!rel.toLowerCase().trim().split(/\s+/).includes("icon")) continue;
+    const href = attrValue(tag, "href");
+    if (!href) continue;
+    try {
+      return new URL(href, baseUrl).href;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/** Percent-decode a data-URI payload into bytes (exact bytes, not a UTF-8 round-trip). */
+export function percentDecodeToBuffer(payload: string): Buffer {
+  const bytes: number[] = [];
+  for (let i = 0; i < payload.length; ) {
+    const ch = payload[i];
+    if (ch === "%" && /^[0-9a-fA-F]{2}$/.test(payload.slice(i + 1, i + 3))) {
+      bytes.push(parseInt(payload.slice(i + 1, i + 3), 16));
+      i += 3;
+      continue;
+    }
+    const cp = payload.codePointAt(i)!;
+    const chStr = String.fromCodePoint(cp);
+    for (const b of Buffer.from(chStr, "utf8")) bytes.push(b);
+    i += chStr.length;
+  }
+  return Buffer.from(bytes);
+}
+
+/** Decode a `data:` URI (base64 or percent-encoded) into the exact bytes it represents. */
+export function decodeDataUri(uri: string): Buffer {
+  const comma = uri.indexOf(",");
+  if (!uri.toLowerCase().startsWith("data:") || comma === -1) {
+    throw new Error("not a data: URI");
+  }
+  const meta = uri.slice(5, comma);
+  const payload = uri.slice(comma + 1).replace(/\s+/g, "");
+  if (/;\s*base64\s*$/i.test(meta)) return Buffer.from(payload, "base64");
+  return percentDecodeToBuffer(payload);
+}
+
+export interface FaviconCandidate {
+  url: string;
+  source: "html" | "dom" | "fallback";
+}
+
+/**
+ * Pick the favicon to verify. The served HTML is authoritative (that is what the
+ * deployment ships); the runtime DOM is a fallback because JS may rewrite the link
+ * (e.g. Uptime Kuma's canvas-generated data: URI badge).
+ */
+export function resolveFaviconCandidate(
+  rawHtml: string | null,
+  domHref: string,
+  pageUrl: string,
+): FaviconCandidate | null {
+  if (rawHtml) {
+    const fromHtml = parseIconLinkHref(rawHtml, pageUrl);
+    if (fromHtml) return { url: fromHtml, source: "html" };
+  }
+  if (domHref) {
+    try {
+      return { url: new URL(domHref, pageUrl).href, source: "dom" };
+    } catch {
+      /* fall through to the /favicon.ico fallback */
+    }
+  }
+  try {
+    return { url: new URL("/favicon.ico", pageUrl).href, source: "fallback" };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRawHtml(
+  context: import("playwright-core").BrowserContext,
+  pageUrl: string,
+): Promise<{ html: string; finalUrl: string } | null> {
+  try {
+    const resp = await context.request.get(pageUrl, { timeout: 20_000 });
+    if (!resp.ok()) return null;
+    const html = await resp.text();
+    return { html, finalUrl: resp.url() || pageUrl };
+  } catch {
+    return null;
+  }
+}
+
+/** Configured brand images (favicon and/or logo) with their sha256 hashes. */
+async function loadBrandAssets(brand: BrandSpec, brandDir: string): Promise<ExpectedBrandAsset[]> {
+  const configured: Array<["favicon" | "logo", string | undefined]> = [
+    ["favicon", brand.favicon],
+    ["logo", brand.logo],
+  ];
+  const assets: ExpectedBrandAsset[] = [];
+  for (const [kind, rel] of configured) {
+    if (!rel) continue;
+    const assetPath = path.resolve(brandDir, rel);
+    try {
+      assets.push({ kind, configured: rel, path: assetPath, hash: sha256(await readFile(assetPath)) });
+    } catch (err) {
+      assets.push({
+        kind,
+        configured: rel,
+        path: assetPath,
+        error: err instanceof Error ? err.message.split("\n")[0] : String(err),
+      });
+    }
+  }
+  return assets;
+}
+
+function describeAssets(assets: ExpectedBrandAsset[]): string {
+  return assets
+    .map((a) => `brand ${a.kind} ${a.configured} (${a.hash ? a.hash.slice(0, 12) + "…" : "unreadable"})`)
+    .join(", ");
+}
+
 /** Run all checks against a live page. Returns the VerifyResult (no printing). */
 export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
   const { url, brand, shotsDir } = opts;
@@ -136,6 +283,7 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
   const consoleErrors: string[] = [];
   let faviconProbe: FaviconProbe | null = null;
   let launchError: string | null = null;
+  const brandAssets = await loadBrandAssets(brand, brandDir);
 
   await ensureDir(shotsDir);
 
@@ -182,8 +330,17 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
           probe.innerWidth = Number(data.innerWidth ?? 0);
           probe.faviconUrl = typeof data.faviconUrl === "string" ? data.faviconUrl : "";
 
-          if (vp.name === "mobile" && brand.favicon) {
-            faviconProbe = await fetchFavicon(context, probe.faviconUrl ?? "");
+          if (vp.name === "desktop" && brandAssets.length > 0) {
+            // The served HTML is authoritative: JS may rewrite the icon href after load
+            // (e.g. a canvas-rendered data: URI). Only fall back to the runtime DOM when
+            // the raw HTML declares no icon link at all.
+            const raw = await fetchRawHtml(context, url);
+            const candidate = resolveFaviconCandidate(
+              raw?.html ?? null,
+              probe.faviconUrl ?? "",
+              raw?.finalUrl ?? url,
+            );
+            if (candidate) faviconProbe = await probeFavicon(context, candidate);
           }
         } catch (err) {
           probe.navError = err instanceof Error ? err.message.split("\n")[0] : String(err);
@@ -339,42 +496,60 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
         : missing.join("; "),
   });
 
-  // ---- favicon: HTTP 200 + sha256 matches brand asset (skip when not configured) ----
-  if (!brand.favicon) {
+  // ---- favicon: served brand asset matches the configured favicon/logo ----
+  if (brandAssets.length === 0) {
     checks.push({
       id: "favicon",
       title: "favicon matches brand asset",
       status: "skip",
-      detail: "brand.favicon not configured",
+      detail: "brand.favicon / brand.logo not configured",
     });
   } else {
-    const brandFaviconPath = path.resolve(brandDir, brand.favicon);
-    let expectedHash: string | null = null;
-    let expectedError: string | null = null;
-    try {
-      expectedHash = sha256(await readFile(brandFaviconPath));
-    } catch (err) {
-      expectedError = `cannot read brand favicon ${brandFaviconPath}: ${
-        err instanceof Error ? err.message.split("\n")[0] : String(err)
-      }`;
-    }
+    const readable = brandAssets.filter((asset) => Boolean(asset.hash));
+    const unreadable = brandAssets.filter((asset) => !asset.hash);
+    const probe = faviconProbe as FaviconProbe | null;
     let status: CheckResult["status"] = "fail";
     let detail: string;
-    if (expectedError) {
-      detail = expectedError;
-    } else if (!faviconProbe) {
+    if (readable.length === 0) {
+      detail = `cannot read configured brand asset(s): ${brandAssets
+        .map((asset) => `${asset.configured} (${asset.error ?? "unreadable"})`)
+        .join(", ")}`;
+    } else if (!probe) {
       detail = "favicon not probed (page did not render)";
-    } else if (faviconProbe.error) {
-      detail = `favicon fetch failed: ${faviconProbe.error}`;
-    } else if (faviconProbe.status !== 200) {
-      detail = `favicon HTTP ${faviconProbe.status} for ${schemeless(faviconProbe.url)}`;
-    } else if (!faviconProbe.hash) {
-      detail = `favicon body could not be hashed (${schemeless(faviconProbe.url)})`;
-    } else if (faviconProbe.hash !== expectedHash) {
-      detail = `sha256 mismatch: page ${faviconProbe.hash.slice(0, 12)}… ≠ brand ${expectedHash!.slice(0, 12)}…`;
+    } else if (probe.kind === "skip") {
+      status = "skip";
+      detail = probe.skipReason ?? "favicon scheme is not verifiable";
+    } else if (probe.error) {
+      if (probe.kind === "data") {
+        status = "skip";
+        detail = `runtime-generated favicon (data: URI) could not be decoded: ${probe.error}`;
+      } else {
+        detail = `favicon fetch failed: ${probe.error}`;
+      }
+    } else if (probe.kind === "data") {
+      const matched = readable.find((asset) => asset.hash === probe.hash);
+      if (matched) {
+        status = "pass";
+        detail = `data: URI favicon, sha256 ${matched.hash!.slice(0, 12)}… matches brand ${matched.kind} ${matched.configured}`;
+      } else {
+        status = "skip";
+        detail = `runtime-generated favicon (data: URI): sha256 ${probe.hash ? probe.hash.slice(0, 12) + "…" : "unknown"} differs from ${describeAssets(readable)}`;
+      }
+    } else if (probe.status !== 200) {
+      detail = `favicon HTTP ${probe.status} for ${schemeless(probe.url)} (expected 200)`;
+    } else if (!probe.hash) {
+      detail = `favicon body could not be hashed (${schemeless(probe.url)})`;
     } else {
-      status = "pass";
-      detail = `HTTP 200, sha256 ${expectedHash!.slice(0, 12)}… matches ${schemeless(faviconProbe.url)}`;
+      const matched = readable.find((asset) => asset.hash === probe.hash);
+      if (matched) {
+        status = "pass";
+        detail = `HTTP 200, sha256 ${matched.hash!.slice(0, 12)}… matches brand ${matched.kind} ${matched.configured} (${schemeless(probe.url)})`;
+      } else {
+        detail = `sha256 mismatch: served ${probe.hash.slice(0, 12)}… ≠ ${describeAssets(readable)} (${schemeless(probe.url)})`;
+      }
+    }
+    if (unreadable.length > 0 && status !== "pass") {
+      detail += `; unreadable configured brand asset(s): ${unreadable.map((asset) => asset.configured).join(", ")}`;
     }
     checks.push({ id: "favicon", title: "favicon matches brand asset", status, detail });
   }
@@ -395,23 +570,51 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
   };
 }
 
-async function fetchFavicon(
+async function probeFavicon(
   context: import("playwright-core").BrowserContext,
-  faviconUrl: string,
+  candidate: FaviconCandidate,
 ): Promise<FaviconProbe> {
-  if (!faviconUrl) {
-    return { url: "", status: 0, hash: null, error: "no favicon URL in page" };
+  const base = { url: candidate.url, source: candidate.source, status: 0, hash: null };
+  if (!candidate.url) {
+    return { ...base, kind: "skip", skipReason: "no favicon URL in served HTML or DOM" };
+  }
+  let scheme = "";
+  try {
+    scheme = new URL(candidate.url).protocol.toLowerCase();
+  } catch {
+    scheme = "";
+  }
+  if (scheme === "data:") {
+    try {
+      return { ...base, kind: "data", status: 200, hash: sha256(decodeDataUri(candidate.url)) };
+    } catch (err) {
+      return {
+        ...base,
+        kind: "data",
+        error: err instanceof Error ? err.message.split("\n")[0] : String(err),
+      };
+    }
+  }
+  if (scheme && scheme !== "http:" && scheme !== "https:") {
+    return {
+      ...base,
+      kind: "skip",
+      skipReason: `favicon scheme "${scheme}" is not verifiable (${candidate.source === "dom" ? "runtime-generated" : "declared"})`,
+    };
   }
   try {
-    const resp = await context.request.get(faviconUrl, { timeout: 15_000 });
+    const resp = await context.request.get(candidate.url, { timeout: 15_000 });
     const body = await resp.body();
-    const hash = resp.status() === 200 ? sha256(body) : null;
-    return { url: faviconUrl, status: resp.status(), hash };
+    return {
+      ...base,
+      kind: "http",
+      status: resp.status(),
+      hash: resp.status() === 200 ? sha256(body) : null,
+    };
   } catch (err) {
     return {
-      url: faviconUrl,
-      status: 0,
-      hash: null,
+      ...base,
+      kind: "http",
       error: err instanceof Error ? err.message.split("\n")[0] : String(err),
     };
   }

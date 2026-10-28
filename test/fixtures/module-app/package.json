@@ -1,0 +1,8 @@
+{
+  "name": "pulse-status",
+  "version": "0.1.0",
+  "description": "Pulse Status — rename/import fixture for relabeld apply tests",
+  "type": "commonjs",
+  "license": "MIT",
+  "main": "server/index.js"
+}

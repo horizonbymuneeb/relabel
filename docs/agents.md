@@ -154,7 +154,7 @@ step, so it always runs the published CLI rather than building this checkout.
 | `version` | no | `latest` | relabeld npm version to run. |
 | `cdp` | no | — | Chrome DevTools endpoint to reuse instead of launching Chromium. |
 | `report` | no | — | Output path for the self-contained HTML report; uploaded as the `relabel-report` artifact. |
-| `fail-on` | no | `brand,console,overflow` | Comma-separated check groups that should fail the gate (`brand`, `console`, `overflow`, `favicon`, `screenshot`). |
+| `fail-on` | no | `brand,console,overflow` | Comma-separated check groups that should fail the gate. A group matches a failed check id exactly, as a prefix (`overflow` matches `overflow-desktop`), or by the id's first segment. Groups that exist in the check set: `brand`, `console`, `overflow`, `screenshots`, `favicon`. |
 
 What the action does:
 
@@ -162,7 +162,8 @@ What the action does:
    is always produced, even on a failing run.
 2. Applies the `fail-on` policy from that JSON: a failed check fails the gate only if it matches a
    configured group (a group matches by check id or id prefix, so `brand` covers `brand-strings` and
-   `brand-title`). Failures outside the policy are reported as a warning and the gate passes.
+   `brand-title`). Failures outside the policy are reported as a warning and the gate passes. Note that
+   the check id is `screenshots`, so the group is spelled `screenshots`.
 3. When `report` is set, runs `report --input <json> --out <report>` and uploads the HTML file as the
    `relabel-report` artifact (14-day retention).
 

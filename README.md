@@ -6,7 +6,7 @@ White-label a self-hosted app from one `brand.yaml`, then prove the result in a 
 logos, favicons), writes one brand spec, patches the app deterministically, and verifies the served
 result: no old-brand strings in the rendered page, the new name in `<title>`, no console errors, no
 horizontal overflow at desktop and mobile widths, screenshots on disk, and a favicon hash match.
-Every run produces the same output. No model is in the loop.
+Patching is deterministic: same input, same replacements. No model is in the loop.
 
 ```bash
 relabeld scan ./app --json                 # read-only: what would change
@@ -85,8 +85,8 @@ relabeld init ./app --name "Nova Status" --domain status.example.com \
 relabeld apply ./app --brand ./app/brand.yaml --dry-run
 relabeld apply ./app --brand ./app/brand.yaml
 
-# 4. Start the app (it now reads a generated compose override, if one was written) ...
-#    and verify the served page, not the source tree.
+# 4. Start the app with the generated compose override, if one was written, then
+#    verify the served page, not the source tree.
 relabeld verify --url http://127.0.0.1:3001 --brand ./app/brand.yaml --json --out verify.json
 
 # 5. Turn the proof into one self-contained HTML file (images embedded, no external requests).
@@ -142,8 +142,8 @@ rebuild and redeploy first. Reference for the check semantics and exit codes:
 - **Skill:** `relabeld skill install --agent claude|codex|dsh|all` installs the bundled `relabel`
   skill (SKILL.md plus references) and validates frontmatter and references after copying.
 - **CI:** the repository ships a composite GitHub Action and the direct CLI gate
-  (`verify --json --out verify.json`), so any CI system can gate on the same seven checks. Usage and
-  the current action caveat: [docs/agents.md](docs/agents.md).
+  (`verify --json --out verify.json`), so any CI system can gate on the same seven checks. Inputs,
+  fail-on policy and artifact wiring: [docs/agents.md](docs/agents.md).
 - **Any other harness:** the core is a plain CLI with JSON output and stable exit codes, so a shell
   step is enough.
 
@@ -161,8 +161,10 @@ relabeld recipe list --json
 ```
 
 The recipe library lives next to the installed package (`recipes/`); `RELABELD_RECIPES_DIR`
-overrides it. Format, validation rules, and contribution steps:
-[docs/recipe-spec.md](docs/recipe-spec.md).
+overrides it. In v0.1.0 the CLI validates, lists, shows and installs recipes; `scan` and `apply` do
+not consume recipe files automatically yet. The variant knowledge that drives patching and
+verification lives in `brand.yaml` (`init` records the scan's `brandTokens` as `variants`). Format,
+validation rules, and contribution steps: [docs/recipe-spec.md](docs/recipe-spec.md).
 
 ## Deploy
 
@@ -187,8 +189,9 @@ the detected public IPv4. Nothing is deleted.
   offering a rebranded instance to third parties.
 - It does not decide what "correct" means. `verify` reports what it measured; the seven checks are
   the contract.
-- It does not guess per-app knowledge. If a surface is not found by `scan` or covered by a recipe,
-  add a recipe or a `files:` rule rather than expecting magic.
+- It does not guess per-app knowledge. `scan` is generic; recipes are validated records, not
+  executable hooks, and v0.1.0 does not consume them automatically. If a surface needs an exact rule,
+  handle it in the brand spec or a follow-up patch rather than expecting magic.
 - It does not touch the system unless asked: `deploy` requires `--dry-run` or `--apply`, and
   `apply --dry-run` performs no writes.
 
@@ -207,8 +210,8 @@ the detected public IPv4. Nothing is deleted.
 
 1. `npm ci && npm run build && npm test` must pass.
 2. Tests live in `test/` (`node --test test/`); fixtures live in `test/fixtures/`.
-3. Recipes are data only: copy `recipes/_template/recipe.yaml` when the template directory exists,
-   or model a new one on `recipes/uptime-kuma/`, then run `relabeld recipe show <id>` to validate.
+3. Recipes are data only: model a new one on `recipes/uptime-kuma/recipe.yaml`, then run
+   `relabeld recipe show <id>` to validate it.
 4. Keep public docs matching the implemented CLI. If a command is still a stub, mark it planned.
 
 ## License

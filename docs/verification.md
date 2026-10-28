@@ -16,7 +16,7 @@ self-contained HTML report by `relabeld report`.
 | `overflow-desktop` | `document.documentElement.scrollWidth - window.innerWidth === 0` at 1440×980. |
 | `overflow-mobile` | Same assertion at 390×844 (drawer/scroll layout must not overflow). |
 | `screenshots` | Desktop and mobile screenshots written to `--shots`. |
-| `favicon` | The favicon responds 200 and its sha256 matches the brand asset referenced by the recipe (skipped when no brand favicon is configured). |
+| `favicon` | The favicon responds 200 (or is a `data:` URI) and its sha256 matches the brand asset referenced by `brand.yaml`; skipped when no brand favicon is configured. |
 
 ## Exit codes
 
@@ -43,5 +43,7 @@ npx relabeld report --input verify.json --out report.html
 ## Notes
 
 - Verification runs against the **served app**, not the source tree. Rebuild/redeploy first.
-- Boxes without a bundled browser can point at a Chrome DevTools endpoint: `--cdp http://127.0.0.1:9223`.
-- Screenshots are PNG, full page, device scale 1, deterministic dimensions.
+- Boxes without a bundled browser can point at a Chrome DevTools endpoint: `--cdp http://127.0.0.1:9223`, or
+  pass `--executable /path/to/chrome` to launch a specific binary.
+- Screenshots are PNG viewport captures at device scale 1: `desktop.png` at 1440x980 and
+  `mobile.png` at 390x844. They are not full-page captures.

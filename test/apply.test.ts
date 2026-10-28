@@ -1,7 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,7 @@ import type { Ctx } from "../dist/types.js";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const FIXTURE = path.join(ROOT, "test/fixtures/demo-app");
+const MODULE_FIXTURE = path.join(ROOT, "test/fixtures/module-app");
 const CLI = path.join(ROOT, "dist/cli.js");
 
 const tempDirs: string[] = [];
@@ -31,6 +33,91 @@ async function workspace(): Promise<string> {
   await rm(path.join(copy, "docker-compose.relabel.yml"), { force: true });
   await rm(path.join(copy, ".relabel"), { recursive: true, force: true });
   return copy;
+}
+
+
+async function moduleWorkspace(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-module-"));
+  tempDirs.push(dir);
+  const copy = path.join(dir, "module-app");
+  await cp(MODULE_FIXTURE, copy, { recursive: true });
+  await rm(path.join(copy, "brand.yaml"), { force: true });
+  await rm(path.join(copy, "docker-compose.relabel.yml"), { force: true });
+  await rm(path.join(copy, ".relabel"), { recursive: true, force: true });
+  return copy;
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    return (await stat(file)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Build a recipe.yaml for the module-app fixture (pulse-status). */
+function recipeYaml(options: { renames?: Array<[string, string]>; files?: string[] } = {}): string {
+  const renames = options.renames ?? [["server/pulse-status-server.js", "server/{{slug}}-server.js"]];
+  const lines = [
+    "id: pulse-status",
+    "name: Pulse Status",
+    "upstream: https://example.com/pulse-status",
+    "match:",
+    "  - package.json",
+    "  - README.md",
+    "  - server/",
+    "  - Dockerfile",
+    "strings:",
+    "  - Pulse Status",
+    "  - pulse-status",
+    "assets: []",
+    "renames:",
+  ];
+  for (const [from, to] of renames) lines.push(`  - from: ${from}`, `    to: "${to}"`);
+  if (options.files?.length) {
+    lines.push("files:");
+    for (const file of options.files) lines.push(`  - path: ${file}`, "    replace: []");
+  }
+  return lines.join("\n") + "\n";
+}
+
+async function recipeLibrary(contents = recipeYaml()): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-lib-"));
+  tempDirs.push(dir);
+  const recipeDir = path.join(dir, "pulse-status");
+  await mkdir(recipeDir, { recursive: true });
+  await writeFile(path.join(recipeDir, "recipe.yaml"), contents, "utf8");
+  return dir;
+}
+
+async function withRecipeLibrary<T>(library: string, fn: () => Promise<T>): Promise<T> {
+  const previous = process.env.RELABELD_RECIPES_DIR;
+  process.env.RELABELD_RECIPES_DIR = library;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env.RELABELD_RECIPES_DIR;
+    else process.env.RELABELD_RECIPES_DIR = previous;
+  }
+}
+
+interface ApplyPayload {
+  dryRun: boolean;
+  recipe: { id: string; name: string; source: string; auto: boolean } | null;
+  changed: Array<{ file: string; replacements: number }>;
+  skipped: Array<{ file: string; reason: string; lines?: number }>;
+  renames: Array<{ from: string; to: string; status: string; written: boolean }>;
+  warnings: string[];
+  compose: { file: string; service: string; newService: string } | null;
+  totals: { filesChanged: number; replacements: number; renamesPerformed: number };
+}
+
+async function applyJson(copy: string, extraArgs: string[] = []): Promise<{ code: number; payload: ApplyPayload; errors: string[] }> {
+  const { ctx, errors } = makeCtx(ROOT, true);
+  const result = await captureStdout(() =>
+    applyRun([copy, "--brand", "brand.yaml", "--json", ...extraArgs], ctx),
+  );
+  return { code: result.code, payload: JSON.parse(result.out) as ApplyPayload, errors };
 }
 
 function makeCtx(cwd: string, json = false): { ctx: Ctx; logs: string[]; errors: string[] } {
@@ -130,7 +217,7 @@ test("apply --dry-run: reports changes, writes nothing at all", async () => {
   };
   assert.equal(payload.dryRun, true);
   assert.equal(payload.totals.filesChanged, 9);
-  assert.equal(payload.totals.replacements, 23);
+  assert.equal(payload.totals.replacements, 22); // docker-compose image: line is preserved
   assert.ok(payload.changed.some((entry) => entry.file === "index.html" && entry.replacements === 5));
   assert.ok(payload.skipped.some((entry) => entry.file === "LICENSE" && /license/.test(entry.reason)));
   assert.ok(payload.skipped.some((entry) => entry.file === "index.html" && /copyright/.test(entry.reason)));
@@ -150,7 +237,7 @@ test("apply: patches strings case-preservingly and never touches the license", a
   const { ctx, errors, logs } = makeCtx(ROOT);
   const code = await applyRun([copy, "--brand", "brand.yaml"], ctx);
   assert.equal(code, 0, errors.join("\n"));
-  assert.ok(logs.some((line) => line.includes("changed 9 files, 23 replacements")));
+  assert.ok(logs.some((line) => line.includes("changed 9 files, 22 replacements")));
 
   const index = await read(copy, "index.html");
   assert.match(index, /<title>Nova Demo — uptime dashboards<\/title>/);
@@ -278,4 +365,195 @@ test("cli: init + apply end-to-end through the real CLI", async () => {
     status = (error as { status?: number }).status ?? -1;
   }
   assert.equal(status, 1, "missing brand file exits 1");
+});
+
+/* ------------------------------------------------------------------ */
+/* task-6: recipe renames + docker image refs                         */
+/* ------------------------------------------------------------------ */
+
+test("init: --from is the MCP source-dir alias; positional wins when both are given", async () => {
+  const first = await moduleWorkspace();
+  const viaFrom = makeCtx(ROOT);
+  assert.equal(await initRun(["--from", first, ...INIT_ARGS], viaFrom.ctx), 0, viaFrom.errors.join("\n"));
+  const brand = YAML.parse(await read(first, "brand.yaml")) as { name: string };
+  assert.equal(brand.name, "Nova Demo");
+
+  const second = await moduleWorkspace();
+  const viaPositional = makeCtx(ROOT);
+  const code = await initRun(
+    [second, "--from", first, "--name", "Positional Brand", "--primary", "#111111"],
+    viaPositional.ctx,
+  );
+  assert.equal(code, 0, viaPositional.errors.join("\n"));
+  const secondBrand = YAML.parse(await read(second, "brand.yaml")) as { name: string };
+  assert.equal(secondBrand.name, "Positional Brand", "positional dir wins over --from");
+  assert.equal((YAML.parse(await read(first, "brand.yaml")) as { name: string }).name, "Nova Demo");
+
+  const third = await moduleWorkspace();
+  const missingValue = makeCtx(ROOT);
+  assert.equal(await initRun([third, "--from"], missingValue.ctx), 2);
+  assert.match(missingValue.errors.join(" "), /--from requires a directory/);
+});
+
+test("apply: recipe rename moves the brand-named module so rewritten requires resolve", async () => {
+  const copy = await moduleWorkspace();
+  const library = await recipeLibrary();
+  await withRecipeLibrary(library, async () => {
+    await initWithBrand(copy);
+    const dockerfileBefore = await read(copy, "Dockerfile");
+    const fromLinesBefore = dockerfileBefore
+      .split("\n")
+      .filter((line) => /^\s*FROM\s/i.test(line));
+    const licenseHash = sha256(await read(copy, "LICENSE"));
+
+    const { code, payload, errors } = await applyJson(copy);
+    assert.equal(code, 0, errors.join("\n"));
+
+    // recipe auto-detected from package.json name (no --recipe flag)
+    assert.ok(payload.recipe);
+    assert.equal(payload.recipe.id, "pulse-status");
+    assert.equal(payload.recipe.auto, true);
+
+    // real filesystem rename happened, driven by the templated target
+    assert.deepEqual(
+      payload.renames.map((op) => [op.from, op.to, op.status]),
+      [["server/pulse-status-server.js", "server/nova-demo-server.js", "renamed"]],
+    );
+    assert.equal(payload.totals.renamesPerformed, 1);
+    assert.ok(await fileExists(path.join(copy, "server/nova-demo-server.js")));
+    assert.equal(await fileExists(path.join(copy, "server/pulse-status-server.js")), false);
+
+    // rewritten refs point at the renamed file and Node can resolve them
+    assert.match(await read(copy, "server/index.js"), /require\("\.\/nova-demo-server"\)/);
+    assert.match(await read(copy, "server/jobs.js"), /require\("\.\/nova-demo-server"\)/);
+    const fromIndex = createRequire(path.join(copy, "server/index.js"));
+    assert.ok(fromIndex.resolve("./nova-demo-server"), "require from index.js resolves");
+    const fromJobs = createRequire(path.join(copy, "server/jobs.js"));
+    assert.ok(fromJobs.resolve("./nova-demo-server"), "require from jobs.js resolves");
+    for (const rel of ["server/nova-demo-server.js", "server/index.js", "server/jobs.js"]) {
+      execFileSync(process.execPath, ["--check", path.join(copy, rel)], { encoding: "utf8" });
+    }
+
+    // Docker image refs are never rebranded
+    const dockerfileAfter = await read(copy, "Dockerfile");
+    const fromLinesAfter = dockerfileAfter.split("\n").filter((line) => /^\s*FROM\s/i.test(line));
+    assert.deepEqual(fromLinesAfter, fromLinesBefore, "FROM lines must stay byte-identical");
+    assert.match(dockerfileAfter, /FROM acme\/pulse-status:base-debian AS build/);
+    assert.ok(!fromLinesAfter.some((line) => line.includes("nova-demo")));
+    assert.ok(
+      payload.skipped.some((entry) => entry.file === "Dockerfile" && /docker image ref/.test(entry.reason)),
+      "docker FROM skip must be reported",
+    );
+    // compose: image: line preserved, service key renamed
+    const composeAfter = await read(copy, "docker-compose.yml");
+    assert.match(composeAfter, /image: acme\/pulse-status:latest/);
+    assert.match(composeAfter, /^ {2}nova-demo:$/m);
+
+    // license untouched
+    assert.equal(sha256(await read(copy, "LICENSE")), licenseHash);
+  });
+});
+
+test("apply: second run reports renames as already applied and changes nothing", async () => {
+  const copy = await moduleWorkspace();
+  const library = await recipeLibrary();
+  await withRecipeLibrary(library, async () => {
+    await initWithBrand(copy);
+    const first = await applyJson(copy);
+    assert.equal(first.code, 0, first.errors.join("\n"));
+    const afterFirst = await snapshot(copy);
+
+    const second = await applyJson(copy);
+    assert.equal(second.code, 0, second.errors.join("\n"));
+    assert.deepEqual(second.payload.changed, []);
+    assert.equal(second.payload.renames[0].status, "already");
+    assert.equal(second.payload.renames[0].written, false);
+    assert.equal(second.payload.totals.renamesPerformed, 0);
+    assert.deepEqual(await snapshot(copy), afterFirst, "second apply must be a no-op");
+  });
+});
+
+test("apply --dry-run: plans renames, moves nothing, writes nothing", async () => {
+  const copy = await moduleWorkspace();
+  const library = await recipeLibrary();
+  await withRecipeLibrary(library, async () => {
+    await initWithBrand(copy);
+    const before = await snapshot(copy);
+
+    const { code, payload, errors } = await applyJson(copy, ["--dry-run"]);
+    assert.equal(code, 0, errors.join("\n"));
+    assert.equal(payload.dryRun, true);
+    assert.equal(payload.renames[0].status, "would-rename");
+    assert.equal(payload.renames[0].written, false);
+    assert.ok(await fileExists(path.join(copy, "server/pulse-status-server.js")), "source stays in dry-run");
+    assert.equal(await fileExists(path.join(copy, "server/nova-demo-server.js")), false);
+    assert.deepEqual(await snapshot(copy), before, "dry-run must not change any file");
+    assert.equal(await fileExists(path.join(copy, "docker-compose.relabel.yml")), false);
+  });
+});
+
+test("apply: missing rename source is a non-fatal warning, not a crash", async () => {
+  const copy = await moduleWorkspace();
+  const library = await recipeLibrary(
+    recipeYaml({ renames: [["server/does-not-exist.js", "server/{{slug}}-ghost.js"]] }),
+  );
+  await withRecipeLibrary(library, async () => {
+    await initWithBrand(copy);
+    const { code, payload, errors } = await applyJson(copy);
+    assert.equal(code, 0, errors.join("\n"));
+    assert.equal(payload.renames[0].status, "missing");
+    assert.equal(payload.renames[0].written, false);
+    assert.ok(
+      payload.warnings.some((warning) => /rename source missing: server\/does-not-exist\.js/.test(warning)),
+      `missing warning reported, got: ${JSON.stringify(payload.warnings)}`,
+    );
+    // string patching still happened
+    assert.ok(payload.changed.some((entry) => entry.file === "server/index.js"));
+  });
+});
+
+test("apply: a recipe files: rule is the only way to rebrand docker image lines", async () => {
+  const copy = await moduleWorkspace();
+  const library = await recipeLibrary(recipeYaml({ files: ["Dockerfile"] }));
+  await withRecipeLibrary(library, async () => {
+    await initWithBrand(copy);
+    const { code, errors } = await applyJson(copy);
+    assert.equal(code, 0, errors.join("\n"));
+    const dockerfile = await read(copy, "Dockerfile");
+    assert.match(dockerfile, /FROM acme\/nova-demo:base-debian AS build/, "files rule opts FROM line back in");
+    assert.ok(!dockerfile.includes("FROM acme/pulse-status"));
+    // compose has no files rule -> image ref still preserved
+    assert.match(await read(copy, "docker-compose.yml"), /image: acme\/pulse-status:latest/);
+  });
+});
+
+test("apply: CLI --recipe <id> selects the recipe explicitly", async () => {
+  const copy = await moduleWorkspace();
+  const library = await recipeLibrary();
+  await withRecipeLibrary(library, async () => {
+    await initWithBrand(copy);
+    const out = execFileSync(
+      process.execPath,
+      [CLI, "apply", copy, "--brand", "brand.yaml", "--recipe", "pulse-status", "--json"],
+      { encoding: "utf8", cwd: ROOT, env: { ...process.env, RELABELD_RECIPES_DIR: library } },
+    );
+    const payload = JSON.parse(out) as ApplyPayload;
+    assert.equal(payload.recipe?.id, "pulse-status");
+    assert.equal(payload.recipe?.auto, false);
+    assert.equal(payload.renames[0].status, "renamed");
+    assert.ok(await fileExists(path.join(copy, "server/nova-demo-server.js")));
+
+    let status = 0;
+    try {
+      execFileSync(process.execPath, [CLI, "apply", copy, "--recipe", "no-such-recipe"], {
+        encoding: "utf8",
+        cwd: ROOT,
+        stdio: "pipe",
+        env: { ...process.env, RELABELD_RECIPES_DIR: library },
+      });
+    } catch (error) {
+      status = (error as { status?: number }).status ?? -1;
+    }
+    assert.equal(status, 1, "unknown explicit recipe exits 1");
+  });
 });

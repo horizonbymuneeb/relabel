@@ -36,7 +36,7 @@ const USAGE = [
   "Environment:",
   "  CF_DNS_ADMIN_TOKEN, CF_ZONE_ID, CF_ZONE_NAME   create the Cloudflare A record (never deletes)",
   "  CF_DNS_IP                                      override the detected public IPv4",
-  "  RELABLE_NGINX_DIR, RELABLE_NGINX_ENABLED_DIR   override nginx target paths",
+  "  RELABEL_NGINX_DIR, RELABEL_NGINX_ENABLED_DIR   override nginx target paths",
 ].join("\n");
 
 export type StepStatus = "planned" | "done" | "unchanged" | "skipped" | "failed";
@@ -387,7 +387,7 @@ async function applyNginx(opts: {
         { id: "nginx:vhost", status: "failed", detail: `cannot write ${opts.configPath}: ${e.message}` },
       ],
       changed,
-      error: `cannot write ${opts.configPath}: ${e.message} — re-run with sudo or set RELABLE_NGINX_DIR`,
+      error: `cannot write ${opts.configPath}: ${e.message} — re-run with sudo or set RELABEL_NGINX_DIR`,
     };
   }
 
@@ -635,8 +635,8 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   if (!spec.ok) return emitError(ctx, spec.error, 1);
   const brand = spec.brand;
 
-  const configDir = process.env.RELABLE_NGINX_DIR || DEFAULT_NGINX_DIR;
-  const enabledDir = process.env.RELABLE_NGINX_ENABLED_DIR || DEFAULT_NGINX_ENABLED_DIR;
+  const configDir = process.env.RELABEL_NGINX_DIR || DEFAULT_NGINX_DIR;
+  const enabledDir = process.env.RELABEL_NGINX_ENABLED_DIR || DEFAULT_NGINX_ENABLED_DIR;
   const configPath = nginxConfigPath(brand.domain, configDir);
   const enabledPath = nginxEnabledPath(brand.domain, enabledDir);
   const content = renderVhost({ domain: brand.domain, port: args.port, brandName: brand.name });

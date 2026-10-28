@@ -57,8 +57,8 @@ async function tempRoot(): Promise<{ root: string; app: string; brand: string }>
 }
 
 const NESTED_ENV = [
-  "RELABLE_NGINX_DIR",
-  "RELABLE_NGINX_ENABLED_DIR",
+  "RELABEL_NGINX_DIR",
+  "RELABEL_NGINX_ENABLED_DIR",
   "CF_DNS_ADMIN_TOKEN",
   "CF_ZONE_ID",
   "CF_ZONE_NAME",
@@ -248,7 +248,7 @@ test("run --dry-run: renders vhost, prints commands, writes nothing", async () =
   const enabledDir = path.join(root, "enabled");
   try {
     const { ctx, out } = makeCtx(root, false);
-    const code = await withEnv({ RELABLE_NGINX_DIR: nginxDir, RELABLE_NGINX_ENABLED_DIR: enabledDir }, () =>
+    const code = await withEnv({ RELABEL_NGINX_DIR: nginxDir, RELABEL_NGINX_ENABLED_DIR: enabledDir }, () =>
       run([app, "--brand", brand, "--dry-run", "--port", "8123"], ctx),
     );
     assert.equal(code, 0);
@@ -271,7 +271,7 @@ test("run --dry-run --json: exactly one JSON object", async () => {
   const nginxDir = path.join(root, "nginx");
   try {
     const { ctx, out, errs } = makeCtx(root, true);
-    const code = await withEnv({ RELABLE_NGINX_DIR: nginxDir }, () =>
+    const code = await withEnv({ RELABEL_NGINX_DIR: nginxDir }, () =>
       run(["--dry-run", "--json", app, "--brand", brand], ctx),
     );
     assert.equal(code, 0);
@@ -324,7 +324,7 @@ test("run --apply: writes + enables the vhost; the second run is a no-op", async
   const enabledDir = path.join(root, "enabled");
   const configPath = path.join(nginxDir, "status.nova.example.conf");
   const enabledPath = path.join(enabledDir, "status.nova.example.conf");
-  const env = { RELABLE_NGINX_DIR: nginxDir, RELABLE_NGINX_ENABLED_DIR: enabledDir };
+  const env = { RELABEL_NGINX_DIR: nginxDir, RELABEL_NGINX_ENABLED_DIR: enabledDir };
   try {
     const first = makeCtx(root, true);
     const firstCode = await withEnv(env, () => run([app, "--brand", brand, "--apply", "--json"], first.ctx));
@@ -361,7 +361,7 @@ test("run --apply: custom port propagates into the written vhost", async () => {
   const nginxDir = path.join(root, "nginx");
   try {
     const { ctx } = makeCtx(root, true);
-    const code = await withEnv({ RELABLE_NGINX_DIR: nginxDir, RELABLE_NGINX_ENABLED_DIR: path.join(root, "enabled") }, () =>
+    const code = await withEnv({ RELABEL_NGINX_DIR: nginxDir, RELABEL_NGINX_ENABLED_DIR: path.join(root, "enabled") }, () =>
       run([app, "--brand", brand, "--apply", "--port", "7001", "--json"], ctx),
     );
     assert.equal(code, 0);

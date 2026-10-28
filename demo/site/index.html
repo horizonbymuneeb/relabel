@@ -69,7 +69,7 @@
 
   .facts {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 1px;
     background: var(--line);
     border: 1px solid var(--line);
@@ -224,6 +224,10 @@
     font-size: 13px;
   }
 
+  @media (max-width: 1000px) {
+    .facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+
   @media (max-width: 760px) {
     header.masthead { padding: 36px 0 22px; }
     .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -239,16 +243,18 @@
 
   <header class="masthead">
     <p class="eyebrow">relabeld demo</p>
-    <h1>A self-hosted status page, rebranded and verified</h1>
+    <h1>Uptime Kuma, white-labelled as Nova Status</h1>
     <p class="lede">
-      The upstream app runs unchanged. <span class="mono">relabeld</span> patches its brand surfaces
-      from one <span class="mono">brand.yaml</span>, then proves the served result in headless Chromium:
-      no old-brand strings, the new name in the page title, no console errors, no horizontal overflow at
-      desktop or mobile widths.
+      The same status page before and after one <span class="mono">relabeld</span> run, verified in
+      headless Chromium. The before pair is the unpatched upstream deployment; the after pair is the
+      same app rebuilt from patched source with the demo brand. The gate then checks the live page:
+      no old-brand strings, the new name in the title, no console errors, no horizontal overflow at
+      either viewport.
     </p>
 
     <dl class="facts">
-      <div class="fact"><dt>App</dt><dd>Uptime Kuma</dd></div>
+      <div class="fact"><dt>Source app</dt><dd>Uptime Kuma 1.23.17</dd></div>
+      <div class="fact"><dt>Brand</dt><dd>Nova Status</dd></div>
       <div class="fact"><dt>Viewports</dt><dd>1440 &times; 980 / 390 &times; 844</dd></div>
       <div class="fact"><dt>Engine</dt><dd>headless Chromium</dd></div>
       <div class="fact"><dt>Gate</dt><dd>7 checks, exit code</dd></div>
@@ -258,35 +264,35 @@
   <section aria-labelledby="evidence">
     <h2 id="evidence">Before and after</h2>
     <p class="section-note">
-      Same page, same content, same viewport. The only difference is the brand: strings, title, palette,
-      logo and favicon. Screenshots are captured by <span class="mono">relabeld verify</span> at the two
-      gate viewports.
+      Captured at the two gate viewports, before and after the rebrand. Before is the upstream
+      deployment (Uptime Kuma setup notice); after is the patched deployment's login page. Screenshot
+      capture is <span class="mono">relabeld verify</span>; nothing here is hand-cropped.
     </p>
 
     <div class="pair">
       <figure class="shot">
-        <div class="shot-label"><span class="state">Before</span><span class="dims">1440 &times; 980</span></div>
+        <div class="shot-label"><span class="state">Before — Uptime Kuma, unpatched</span><span class="dims">1440 &times; 980</span></div>
         <img src="../shots/before-desktop-1440x980.png" width="1440" height="980"
-             alt="Upstream status page at desktop width, showing the original product name.">
+             alt="Upstream Uptime Kuma status page at desktop width, showing the original product name.">
       </figure>
       <figure class="shot">
-        <div class="shot-label"><span class="state">After</span><span class="dims">1440 &times; 980</span></div>
+        <div class="shot-label"><span class="state">After — Nova Status, patched</span><span class="dims">1440 &times; 980</span></div>
         <img src="../shots/after-desktop-1440x980.png" width="1440" height="980"
-             alt="The same status page after relabeld applied the new brand, at desktop width.">
+             alt="The same status page at desktop width, rebranded as Nova Status by relabeld.">
       </figure>
     </div>
 
     <div class="mobile-pair">
       <div class="pair">
         <figure class="shot">
-          <div class="shot-label"><span class="state">Before</span><span class="dims">390 &times; 844</span></div>
+          <div class="shot-label"><span class="state">Before — Uptime Kuma, unpatched</span><span class="dims">390 &times; 844</span></div>
           <img src="../shots/before-mobile-390x844.png" width="390" height="844"
-               alt="Upstream status page at mobile width.">
+               alt="Upstream Uptime Kuma status page at mobile width.">
         </figure>
         <figure class="shot">
-          <div class="shot-label"><span class="state">After</span><span class="dims">390 &times; 844</span></div>
+          <div class="shot-label"><span class="state">After — Nova Status, patched</span><span class="dims">390 &times; 844</span></div>
           <img src="../shots/after-mobile-390x844.png" width="390" height="844"
-               alt="Rebranded status page at mobile width.">
+               alt="The same status page at mobile width, rebranded as Nova Status.">
         </figure>
       </div>
     </div>
@@ -386,7 +392,7 @@ node dist/cli.js report --input verify.json --out report.html</code></pre>
   </section>
 
   <footer class="foot">
-    <span>relabeld v0.1.0 — deterministic white-labelling with proof.</span>
+    <span>relabeld v0.1.0 — uptime-kuma 1.23.17 white-labelled as Nova Status, hosted on status.muneebs.space.</span>
     <span>MIT. Screenshots and reports captured by the CLI, not by hand.</span>
   </footer>
 

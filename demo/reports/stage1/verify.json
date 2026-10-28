@@ -1,0 +1,64 @@
+{
+  "url": "https://status.muneebs.space",
+  "brandName": "Nova Status",
+  "checks": [
+    {
+      "id": "brand-strings",
+      "title": "old brand strings absent",
+      "status": "pass",
+      "detail": "0 occurrences across 3 old-brand variants (rendered text + HTML)"
+    },
+    {
+      "id": "brand-title",
+      "title": "new brand in <title>",
+      "status": "pass",
+      "detail": "desktop: \"Nova Status - Login\"; mobile: \"Nova Status - Login\""
+    },
+    {
+      "id": "console-errors",
+      "title": "no console/page errors",
+      "status": "pass",
+      "detail": "0 page errors, 0 console errors"
+    },
+    {
+      "id": "overflow-desktop",
+      "title": "no horizontal overflow (1440×980)",
+      "status": "pass",
+      "detail": "scrollWidth 1440 − innerWidth 1440 = 0"
+    },
+    {
+      "id": "overflow-mobile",
+      "title": "no horizontal overflow (390×844)",
+      "status": "pass",
+      "detail": "scrollWidth 390 − innerWidth 390 = 0"
+    },
+    {
+      "id": "screenshots",
+      "title": "desktop + mobile screenshots",
+      "status": "pass",
+      "detail": "saved desktop (20371 bytes), mobile (15890 bytes) in /home/ubuntu/work/relabel/demo/shots"
+    },
+    {
+      "id": "favicon",
+      "title": "favicon matches brand asset",
+      "status": "fail",
+      "detail": "favicon fetch failed: apiRequestContext.get: Protocol \"data:\" not supported. Expected \"http:\""
+    }
+  ],
+  "screenshots": [
+    {
+      "name": "desktop",
+      "path": "/home/ubuntu/work/relabel/demo/shots/desktop.png"
+    },
+    {
+      "name": "mobile",
+      "path": "/home/ubuntu/work/relabel/demo/shots/mobile.png"
+    }
+  ],
+  "summary": {
+    "passed": 6,
+    "failed": 1,
+    "skipped": 0
+  },
+  "generatedAt": "2026-10-28T23:23:10.947Z"
+}

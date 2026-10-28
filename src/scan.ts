@@ -65,6 +65,8 @@ const GENERIC_NAMES = new Set([
   "proxy", "gateway", "static", "public", "assets", "docs", "scripts",
   "tailwind", "vite", "webpack", "esbuild", "gulp", "storybook", "rollup",
   "builder", "buildkit", "init", "setup", "backup", "restore",
+  "codespaces", "gitpod", "devcontainer", "replit", "glitch", "render",
+  "railway", "fly", "flyio", "vercel", "netlify", "supabase",
 ]);
 
 const ENV_KEYS = new Set([
@@ -231,9 +233,23 @@ export interface BrandSeed {
   file?: string;
 }
 
+const VERSION_SUFFIX_RE = /(?:[-_. ]v?\d+(?:\.\d+)+(?:[-_.][0-9A-Za-z.-]+)?)$/;
+
+/** "uptime-kuma-1.23.17" -> "uptime-kuma" (release dirs are not brand names). */
+function stripVersionSuffix(value: string): string {
+  let out = value.trim();
+  for (let i = 0; i < 3; i++) {
+    const next = out.replace(VERSION_SUFFIX_RE, "").replace(/[-_. ]+$/, "");
+    if (next === out || next.length < 3) break;
+    out = next;
+  }
+  return out;
+}
+
 function normalizeSeed(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
-  const value = raw.trim().replace(/^["'`]+/, "").replace(/["'`]+$/, "").trim();
+  const stripped = stripVersionSuffix(raw);
+  const value = stripped.trim().replace(/^["'`]+/, "").replace(/["'`]+$/, "").trim();
   if (!value || value.length < 3 || value.length > 60) return null;
   if (/^(true|false|null|none|undefined|example|changeme|localhost|latest|default)$/i.test(value)) {
     return null;
@@ -349,7 +365,10 @@ async function seedsFromReadme(
   seeds: BrandSeed[],
   seen: Set<string>,
 ): Promise<void> {
-  const readme = files.find((file) => /^readme\.(md|mdx|markdown|txt)$/i.test(path.basename(file)));
+  const readmes = files
+    .filter((file) => /^readme\.(md|mdx|markdown|txt)$/i.test(path.basename(file)))
+    .sort((a, b) => a.split(path.sep).length - b.split(path.sep).length || a.localeCompare(b));
+  const readme = readmes.find((file) => path.dirname(file) === path.resolve(root)) ?? readmes[0];
   if (!readme) return;
   const raw = await readTextIfSmall(readme, 512 * 1024);
   if (!raw) return;

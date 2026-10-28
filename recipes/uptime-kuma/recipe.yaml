@@ -24,6 +24,9 @@ assets:
   - kind: favicon
     targets:
       - public/favicon.ico
+renames:
+  - from: server/uptime-kuma-server.js
+    to: server/{{slug}}-server.js
 compose:
   service: uptime-kuma
   port: 3001
@@ -39,3 +42,7 @@ notes:
   - The docker-compose service is named uptime-kuma and maps 3001:3001; the image is louislam/uptime-kuma.
   - package.json name stays uptime-kuma for dependency and update compatibility.
   - UI strings live in src/lang/*.json plus server/ and src/ components; the page <title> is rendered from the app name.
+  - "renames — server/uptime-kuma-server.js MUST be renamed with the brand slug, because apply rewrites the require(../uptime-kuma-server) refs in server/ and test/ to the new name; without the rename the container dies with Cannot find module."
+  - "Windows extras decided out of scope — extra/exe-builder/UptimeKuma.sln, UptimeKuma.csproj and UptimeKuma.sln.DotSettings.user are NOT renamed. Their contents are project-system files that apply does not patch (not scannable text), so renaming them would break the .sln -> .csproj path; they are Windows-only packaging and not part of the Linux container runtime. The .cs/.resx files next to them still get normal string replacement."
+  - "NOT renamed on purpose — server/uptime-cache-list.js, src/components/Uptime.vue and db/kuma.db. Their names contain only partial brand words (uptime, kuma) that the brand tokens/variants never match, so no reference is rewritten; renaming them would create dangling refs. db/kuma.db is the SQLite seed fixture (binary)."
+  - "Docker image refs are never rebranded — docker/dockerfile FROM lines and docker/docker-compose.yml image lines keep the upstream louislam/uptime-kuma refs on purpose (that namespace belongs to the upstream author, not the app brand)."
