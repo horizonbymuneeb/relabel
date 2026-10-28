@@ -1,0 +1,11 @@
+node_modules
+dist
+test
+demo
+.git
+.github
+*.tgz
+coverage
+.relabel
+.DS_Store
+npm-debug.log*

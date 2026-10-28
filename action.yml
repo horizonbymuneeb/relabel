@@ -1,0 +1,89 @@
+name: "relabel verify"
+description: "White-label verification gate: brand strings, console errors and overflow, with a JSON proof artifact."
+author: "horizonbymuneeb"
+
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  url:
+    description: "URL of the running app to verify (for example https://status.example.com)."
+    required: true
+  brand:
+    description: "Path to the brand.yaml spec (relative to the repository root)."
+    required: false
+    default: "brand.yaml"
+  version:
+    description: "Version of the relabeld npm package to run (default: latest)."
+    required: false
+    default: "latest"
+  cdp:
+    description: "Optional Chrome DevTools Protocol endpoint to reuse instead of launching Chromium."
+    required: false
+  report:
+    description: "Optional output path for the self-contained HTML report."
+    required: false
+  fail-on:
+    description: "Comma-separated checks that should fail the gate."
+    required: false
+    default: "brand,console,overflow"
+
+outputs:
+  report:
+    description: "Path to the uploaded HTML report (empty when not requested)."
+    value: ${{ inputs.report }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Verify brand
+      id: verify
+      shell: bash
+      env:
+        INPUT_URL: ${{ inputs.url }}
+        INPUT_BRAND: ${{ inputs.brand }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_CDP: ${{ inputs.cdp }}
+        INPUT_REPORT: ${{ inputs.report }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        set -uo pipefail
+
+        args=(verify --url "$INPUT_URL" --brand "$INPUT_BRAND" --json --fail-on "$INPUT_FAIL_ON")
+        if [ -n "${INPUT_CDP:-}" ]; then
+          args+=(--cdp "$INPUT_CDP")
+        fi
+        if [ -n "${INPUT_REPORT:-}" ]; then
+          args+=(--report "$INPUT_REPORT")
+        fi
+
+        set +e
+        output="$(npx -y "relabeld@${INPUT_VERSION}" "${args[@]}" 2>&1)"
+        code=$?
+        set -e
+
+        if [ "$code" -eq 0 ]; then
+          echo "$output"
+          exit 0
+        fi
+
+        echo "::error::relabel verify failed (exit $code)"
+        echo "::group::relabel verify JSON"
+        echo "$output"
+        echo "::endgroup::"
+        exit 1
+
+    - name: Upload report
+      if: always() && inputs.report != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: relabel-report
+        path: ${{ inputs.report }}
+        if-no-files-found: warn
+        retention-days: 14
