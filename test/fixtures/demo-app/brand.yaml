@@ -1,0 +1,8 @@
+name: Nova Demo
+domain: demo.example.com
+palette:
+  primary: "#2563EB"
+variants:
+  - Pulse Status
+keep:
+  - LICENSE

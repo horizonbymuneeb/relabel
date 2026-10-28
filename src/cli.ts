@@ -79,9 +79,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   }
   const positionals = parsed.positionals as string[];
   const command = positionals[0];
-  if (!command || values.help && !COMMANDS[command]) {
+  if (!command) {
     console.log(HELP);
-    return command ? 0 : 1;
+    return values.help ? 0 : 1;
+  }
+  if (values.help && !COMMANDS[command]) {
+    console.log(HELP);
+    return 0;
   }
   const entry = COMMANDS[command];
   if (!entry) {

@@ -1,0 +1,13 @@
+name: Nova Status
+domain: status.muneebs.space
+palette:
+  primary: "#2563EB"
+  accent: "#60A5FA"
+logo: public/icon.svg
+favicon: public/favicon.ico
+variants:
+  - Codespaces
+  - Uptime Kuma
+  - Uptime Kuma Src
+keep:
+  - LICENSE
