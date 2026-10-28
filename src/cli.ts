@@ -47,9 +47,7 @@ export function makeCtx(opts: { cwd?: string; json?: boolean }): Ctx {
   return {
     cwd: opts.cwd ?? process.cwd(),
     json: Boolean(opts.json),
-    log: (msg: string) => {
-      if (!opts.json) console.log(msg);
-    },
+    log: (msg: string) => console.log(msg),
     error: (msg: string) => console.error(msg),
     version: pkgVersion(),
   };
@@ -94,7 +92,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   const ctx = makeCtx({ cwd: values.cwd, json: values.json });
   const mod = (await import(entry.file)) as { run: (argv: string[], ctx: Ctx) => Promise<number> };
-  const rest = argv.filter((a) => a !== "--json" && !a.startsWith("--cwd") && !a.startsWith("--help") && a !== "-h" && a !== "-v" && a !== "--version");
+  const rest = argv.slice(argv.indexOf(command) + 1);
   return mod.run(rest, ctx);
 }
 
