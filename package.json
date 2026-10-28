@@ -1,0 +1,52 @@
+{
+  "name": "relabeld",
+  "version": "0.1.0",
+  "description": "White-label any self-hosted app with one command — deterministic, verified, agent-agnostic.",
+  "type": "module",
+  "bin": {
+    "relabeld": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "recipes",
+    "skills",
+    "docs",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test test/",
+    "dev": "tsc -w -p tsconfig.json",
+    "prepack": "npm run build",
+    "check:pack": "npm pack --dry-run"
+  },
+  "keywords": [
+    "white-label",
+    "self-hosted",
+    "rebrand",
+    "docker",
+    "agent",
+    "mcp",
+    "skill",
+    "agents"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/horizonbymuneeb/relabel.git"
+  },
+  "homepage": "https://github.com/horizonbymuneeb/relabel",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "playwright-core": "^1.64.1",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
