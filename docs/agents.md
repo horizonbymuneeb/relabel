@@ -20,7 +20,7 @@ CLI or the repository's composite action).
 `scan --json` returns `ScanResult`: `root`, `scannedFiles`, `brandTokens`, `findings[]`, `assets[]`,
 `summaries`, `skipped[]` (files over the read limit), `maxFileBytes`, `generatedAt`.
 
-`apply --json` returns `{ dryRun, brand, recipe, changed[], skipped[], renames[], assets[], compose, warnings[], totals }`.
+`apply --json` returns `{ dryRun, brand, recipe, changed[], skipped[], renames[], assets[], compose, warnings[], totals }`; on a refused write it returns exactly `{ ok: false, error, danglingRefs: [{file,specifier,kind}] }` and exits 1.
 
 ## MCP server
 

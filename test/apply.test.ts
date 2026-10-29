@@ -19,6 +19,8 @@ const FIXTURE = path.join(ROOT, "test/fixtures/demo-app");
 const MODULE_FIXTURE = path.join(ROOT, "test/fixtures/module-app");
 const DATA_FIXTURE = path.join(ROOT, "test/fixtures/data-safety");
 const MARKUP_FIXTURE = path.join(ROOT, "test/fixtures/markup-app");
+const WEB_ASSETS_FIXTURE = path.join(ROOT, "test/fixtures/web-assets");
+const WEB_DANGLING_FIXTURE = path.join(ROOT, "test/fixtures/web-dangling");
 const CLI = path.join(ROOT, "dist/cli.js");
 
 const tempDirs: string[] = [];
@@ -75,6 +77,51 @@ async function markupCopy(): Promise<string> {
   await rm(path.join(copy, "docker-compose.relabel.yml"), { force: true });
   await rm(path.join(copy, ".relabel"), { recursive: true, force: true });
   return copy;
+}
+
+async function fixtureWorkspace(fixture: string): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-fx-"));
+  tempDirs.push(dir);
+  const copy = path.join(dir, path.basename(fixture));
+  await cp(fixture, copy, { recursive: true });
+  await rm(path.join(copy, "brand.yaml"), { force: true });
+  await rm(path.join(copy, "docker-compose.relabel.yml"), { force: true });
+  await rm(path.join(copy, ".relabel"), { recursive: true, force: true });
+  return copy;
+}
+
+async function webAssetsCopy(): Promise<string> {
+  return fixtureWorkspace(WEB_ASSETS_FIXTURE);
+}
+
+async function webDanglingCopy(): Promise<string> {
+  return fixtureWorkspace(WEB_DANGLING_FIXTURE);
+}
+
+/** Recipe for web-assets: renames the four referenced asset files. */
+function webAssetsRecipeYaml(): string {
+  return [
+    "id: pulse-status",
+    "name: Pulse Status",
+    "upstream: https://example.com/pulse-status",
+    "match:",
+    "  - package.json",
+    "  - index.html",
+    "  - styles.css",
+    "strings:",
+    "  - Pulse Status",
+    "  - pulse-status",
+    "assets: []",
+    "renames:",
+    '  - from: public/logos/pulse-status-logo.svg',
+    '    to: "public/logos/{{slug}}-logo.svg"',
+    '  - from: public/logos/pulse-status-bg.svg',
+    '    to: "public/logos/{{slug}}-bg.svg"',
+    '  - from: media/pulse-status-sq.svg',
+    '    to: "media/{{slug}}-sq.svg"',
+    '  - from: media/pulse-status-lg.svg',
+    '    to: "media/{{slug}}-lg.svg"',
+  ].join("\n") + "\n";
 }
 
 /** Recipe for markup-app: renames the three brand-named asset files. */
@@ -157,6 +204,9 @@ async function withRecipeLibrary<T>(library: string, fn: () => Promise<T>): Prom
 }
 
 interface ApplyPayload {
+  ok?: boolean;
+  error?: string;
+  danglingRefs?: Array<{ file: string; specifier: string; kind: string }>;
   dryRun: boolean;
   recipe: { id: string; name: string; source: string; auto: boolean } | null;
   changed: Array<{ file: string; replacements: number }>;
@@ -780,6 +830,8 @@ test("apply: HTML/CSS asset refs are guarded — no recipe means refusal, exit 1
   assert.equal(payload.ok, false);
   assert.match(payload.error ?? "", /refusing to write/);
   const refs = payload.danglingRefs ?? [];
+  assert.equal(refs.length, 3, "only the three live refs may be guarded");
+  assert.ok(!refs.some((entry) => entry.specifier.includes("legacy/")), "commented-out refs are inert");
   const bySpec = new Map(refs.map((entry) => [`${entry.file}:${entry.specifier}`, entry.kind]));
   assert.equal(bySpec.get("index.html:public/nova-demo-logo.svg"), "asset");
   assert.equal(bySpec.get("index.html:public/nova-demo-favicon.svg"), "asset");
@@ -857,4 +909,108 @@ test("apply: no-op second run reports written:false for assets and compose", asy
   assert.equal(second.payload.compose?.written, false, "identical compose must not be rewritten");
   assert.equal(second.payload.renames.length, 0);
   assert.deepEqual(await snapshot(copy), afterFirst);
+});
+
+/* ------------------------------------------------------------------ */
+/* task-17: inert comments, root-absolute/srcset refs, --allow-dangling */
+/* ------------------------------------------------------------------ */
+
+test("apply: commented-out HTML/CSS asset refs are inert (no false refusal)", async () => {
+  const copy = await markupCopy();
+  await initWithBrand(copy);
+
+  // no recipe: refusal lists only the three live refs, never the commented ones
+  const refuse = await applyJson(copy);
+  assert.equal(refuse.code, 1);
+  const refs = refuse.payload.danglingRefs ?? [];
+  assert.equal(refs.length, 3);
+  assert.ok(!refs.some((entry) => entry.specifier.includes("legacy/")));
+
+  // with renames the same tree applies fine even though a commented ref is dangling
+  const library = await recipeLibrary(markupRecipeYaml());
+  await withRecipeLibrary(library, async () => {
+    const ok = await applyJson(copy);
+    assert.equal(ok.code, 0, ok.errors.join("\n"));
+    const html = await read(copy, "index.html");
+    assert.match(html, /<!-- <link rel="stylesheet" href="legacy\/nova-demo-disabled\.css" \/> -->/);
+    assert.match(await read(copy, "styles.css"), /url\(legacy\/nova-demo-missing\.png\)/);
+  });
+});
+
+test("apply: root-absolute and srcset refs are guarded; suffix match passes with renames", async () => {
+  const copy = await webAssetsCopy();
+  await initWithBrand(copy);
+  const before = await snapshot(copy);
+
+  const refuse = await applyJson(copy);
+  assert.equal(refuse.code, 1);
+  const refs = refuse.payload.danglingRefs ?? [];
+  const keys = refs.map((entry) => `${entry.file}:${entry.specifier}`);
+  assert.ok(keys.includes("index.html:/logos/nova-demo-logo.svg"), keys.join(", "));
+  assert.ok(keys.includes("styles.css:/logos/nova-demo-bg.svg"), keys.join(", "));
+  assert.ok(keys.includes("index.html:media/nova-demo-sq.svg"), keys.join(", "));
+  assert.ok(keys.includes("index.html:media/nova-demo-lg.svg"), keys.join(", "));
+  assert.ok(refs.every((entry) => entry.kind === "asset"));
+  assert.deepEqual(await snapshot(copy), before, "refusal writes nothing");
+
+  const library = await recipeLibrary(webAssetsRecipeYaml());
+  await withRecipeLibrary(library, async () => {
+    const ok = await applyJson(copy);
+    assert.equal(ok.code, 0, ok.errors.join("\n"));
+    assert.equal(ok.payload.renames.filter((entry) => entry.status === "renamed").length, 4);
+    // root-absolute refs suffix-match the renamed web files
+    assert.ok(await fileExists(path.join(copy, "public/logos/nova-demo-logo.svg")));
+    assert.ok(await fileExists(path.join(copy, "public/logos/nova-demo-bg.svg")));
+    assert.ok(await fileExists(path.join(copy, "media/nova-demo-sq.svg")));
+    assert.ok(await fileExists(path.join(copy, "media/nova-demo-lg.svg")));
+    const html = await read(copy, "index.html");
+    assert.match(html, /src="\/logos\/nova-demo-logo\.svg"/);
+    assert.match(html, /srcset="media\/nova-demo-sq\.svg 1x, media\/nova-demo-lg\.svg 2x"/);
+    assert.match(await read(copy, "styles.css"), /url\(\/logos\/nova-demo-bg\.svg\)/);
+  });
+});
+
+test("apply: a rewritten root-absolute ref with no matching web file is refused", async () => {
+  const copy = await webDanglingCopy();
+  await initWithBrand(copy);
+  const before = await snapshot(copy);
+  const { code, payload } = await applyJson(copy);
+  assert.equal(code, 1);
+  assert.equal(payload.ok, false);
+  assert.ok(
+    (payload.danglingRefs ?? []).some(
+      (entry) => entry.file === "index.html" && entry.specifier === "/missing/nova-demo-nope.svg",
+    ),
+    JSON.stringify(payload.danglingRefs),
+  );
+  assert.deepEqual(await snapshot(copy), before);
+});
+
+test("apply: --allow-dangling warns and proceeds instead of refusing", async () => {
+  const copy = await webDanglingCopy();
+  await initWithBrand(copy);
+  const { code, payload, errors } = await applyJson(copy, ["--allow-dangling"]);
+  assert.equal(code, 0, errors.join("\n"));
+  assert.equal(payload.ok, undefined, "success payload is not the refusal object");
+  assert.ok(
+    payload.warnings.some((warning) =>
+      /dangling ref allowed by --allow-dangling: index\.html:\/missing\/nova-demo-nope\.svg \(asset\)/.test(warning),
+    ),
+    payload.warnings.join("\n"),
+  );
+  assert.ok(payload.changed.some((entry) => entry.file === "index.html"));
+  assert.match(await read(copy, "index.html"), /src="\/missing\/nova-demo-nope\.svg"/);
+});
+
+test("apply: --allow-dangling before the directory does not swallow the path", async () => {
+  const copy = await webDanglingCopy();
+  await initWithBrand(copy);
+  const { ctx, errors } = makeCtx(ROOT, true);
+  const result = await captureStdout(() =>
+    applyRun(["--allow-dangling", copy, "--brand", "brand.yaml", "--json"], ctx),
+  );
+  assert.equal(result.code, 0, errors.join("\n"));
+  const payload = JSON.parse(result.out) as ApplyPayload;
+  assert.ok(payload.changed.some((entry) => entry.file === "index.html"));
+  assert.ok(payload.warnings.some((warning) => /dangling ref allowed/.test(warning)));
 });

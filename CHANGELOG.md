@@ -2,6 +2,20 @@
 
 All notable changes to `relabeld`. Built in versioned milestones.
 
+## 1.0.1 — hardening
+
+- `apply` ref guard now covers HTML/CSS/SVG asset references (`href`, `src`, `url()`), including
+  root-absolute paths (suffix-matched against the repo) and `srcset`; inert references inside HTML
+  and CSS comments are ignored. Unresolvable rewritten refs still refuse atomically; new
+  `--allow-dangling` downgrades the refusal to a warning.
+- `apply --json` on a refused write emits exactly `{ ok: false, error, danglingRefs[] }` and exits 1.
+- `apply --json` `written` flags are byte-accurate: a no-op second run reports `written: false`.
+- `verify` imports the canonical license-line rule from `scan`, so apply/scan/verify cannot drift
+  (`(c)` requires a year; `license: Old Name` is not exempt).
+- Recipes validate `renames[]` (array of `{from,to}`, non-empty, safe repo-relative paths).
+- Packaging: source maps dropped from the tarball (27 files, 81.5 kB packed / 293.6 kB unpacked).
+- GitHub Action: missing-proof branch now exits 1 instead of forwarding exit 0.
+
 ## 1.0.0 — initial public release
 
 The complete white-label engine: deterministic CLI, proof-gated verification, recipes, and
@@ -14,7 +28,9 @@ first-class agent integration.
 - `apply` — deterministic, idempotent patching: text strings (case-preserving, word-boundary),
   asset replacement, recipe-driven file renames, compose override; `--dry-run` writes nothing.
   Docker image references (`FROM`, `image:`) are never rewritten implicitly. Refuses to write
-  (exit 1, atomic) when rewritten module/asset references would not resolve. Files that are
+  (exit 1, atomic) when rewritten **relative** module/asset references would not resolve
+  (root-absolute and `srcset` refs: resolved by suffix match, refusal when unresolved;
+  `--allow-dangling` downgrades to a warning). Files that are
   binary, non-UTF-8, or over the read limit are reported as skipped, never partially patched;
   `--max-file-bytes` raises the limit.
 - `verify` — headless proof with 7 checks: brand strings (attribution/`keep`-aware),

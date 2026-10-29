@@ -57,6 +57,8 @@ export const APPLY_USAGE = [
   "  --dry-run        report changes, write nothing",
   "  --max-file-bytes <n>  largest text file to patch (default 524288); larger",
   "                        files are reported as skipped and left untouched",
+  "  --allow-dangling      warn and apply even when rewritten refs would dangle",
+  "                        (default: refuse to write and exit 1)",
   "  --json           machine-readable {changed,skipped,renames}",
 ].join("\n");
 
@@ -594,32 +596,71 @@ const ASSET_REF_PATTERNS: RegExp[] = [
   /\b(?:href|src)\s*=\s*["']([^"']+)["']/gi,
   /\burl\(\s*["']?([^"')]+?)["']?\s*\)/gi,
 ];
-const NON_RELATIVE_ASSET_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/)/i;
+const NON_RELATIVE_ASSET_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i;
+const SRCSET_PATTERN = /\bsrcset\s*=\s*["']([^"']+)["']/gi;
 
-/** Extract deduped relative asset refs (href/src/url()) from HTML/CSS/markup. */
+/** Remove HTML and CSS comments so commented-out refs stay inert. */
+export function stripInertComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?-->/g, " ").replace(/\/\*[\s\S]*?\*\//g, " ");
+}
+
+/**
+ * Extract deduped asset refs (href/src/url()/srcset) from HTML/CSS/markup.
+ * Root-absolute refs ("/x") are kept: callers suffix-match them against walked
+ * web files. Inert refs inside HTML/CSS comments are ignored.
+ */
 export function extractRelativeAssetRefs(text: string): string[] {
   const found = new Set<string>();
+  const source = stripInertComments(text);
+  const consider = (value: string): void => {
+    const raw = value.trim();
+    if (!raw || NON_RELATIVE_ASSET_RE.test(raw)) return;
+    if (raw.includes("{{") || raw.includes("}}") || raw.includes("${") || raw.includes("<%")) return;
+    const cleaned = stripSpecifierSuffix(raw);
+    if (!cleaned || cleaned === "." || cleaned === ".." || cleaned === "/" || /\s/.test(cleaned)) return;
+    found.add(cleaned);
+  };
   for (const pattern of ASSET_REF_PATTERNS) {
     pattern.lastIndex = 0;
     let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      const raw = match[1].trim();
-      if (!raw || NON_RELATIVE_ASSET_RE.test(raw)) continue;
-      if (raw.includes("{{") || raw.includes("}}") || raw.includes("${") || raw.includes("<%")) continue;
-      const cleaned = stripSpecifierSuffix(raw);
-      if (!cleaned || cleaned === "." || cleaned === ".." || /\s/.test(cleaned)) continue;
-      found.add(cleaned);
+    while ((match = pattern.exec(source)) !== null) consider(match[1]);
+  }
+  SRCSET_PATTERN.lastIndex = 0;
+  let srcset: RegExpExecArray | null;
+  while ((srcset = SRCSET_PATTERN.exec(source)) !== null) {
+    for (const candidate of srcset[1].split(",")) {
+      const url = candidate.trim().split(/\s+/)[0] ?? "";
+      consider(url);
     }
   }
   return [...found];
 }
 
-function resolveAssetRef(
+/**
+ * Resolve one asset ref. Relative refs resolve against the referencing file
+ * (unchanged behaviour). Root-absolute refs are matched against the walked web
+ * files by exact path or suffix, so "/logos/x.png" matches public/logos/x.png.
+ */
+export function resolveAssetReference(
+  root: string,
+  webFiles: string[],
   baseFileAbs: string,
   ref: string,
   existsFn: (candidate: string) => boolean,
 ): string | null {
-  const target = path.resolve(path.dirname(baseFileAbs), stripSpecifierSuffix(ref));
+  const cleaned = stripSpecifierSuffix(ref.trim());
+  if (cleaned.startsWith("/")) {
+    const target = cleaned.replace(/^\/+/, "");
+    if (!target) return null;
+    const exact = path.resolve(root, target);
+    if (existsFn(exact)) return path.normalize(exact);
+    const normalized = path.normalize(target);
+    for (const rel of webFiles) {
+      if (rel === normalized || rel.endsWith("/" + normalized)) return rel;
+    }
+    return null;
+  }
+  const target = path.resolve(path.dirname(baseFileAbs), cleaned);
   return existsFn(target) ? path.normalize(target) : null;
 }
 
@@ -698,12 +739,14 @@ function chooseService(services: Record<string, unknown>, variants: string[]): s
 /* ------------------------------------------------------------------ */
 
 export async function run(argv: string[], ctx: Ctx): Promise<number> {
-  const parsed = parseToolArgs(argv);
+  // parseToolArgs only knows shared boolean flags; normalize the apply-only
+  // boolean so `--allow-dangling <dir>` never swallows the directory argument.
+  const parsed = parseToolArgs(argv.map((arg) => (arg === "--allow-dangling" ? "--allow-dangling=true" : arg)));
   if (parsed.flags.help === true) {
     ctx.log(APPLY_USAGE);
     return 0;
   }
-  const errors = flagErrors(parsed, ["json", "help", "brand", "dry-run", "recipe", "max-file-bytes"]);
+  const errors = flagErrors(parsed, ["json", "help", "brand", "dry-run", "recipe", "max-file-bytes", "allow-dangling"]);
   if (errors.length || parsed.positionals.length > 1) {
     for (const error of errors) ctx.error(`apply: ${error}`);
     if (parsed.positionals.length > 1) ctx.error("apply: expected at most one directory argument");
@@ -713,6 +756,7 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
 
   const root = path.resolve(ctx.cwd, parsed.positionals[0] ?? ".");
   const dryRun = parsed.flags["dry-run"] === true;
+  const allowDangling = parsed.flags["allow-dangling"] === true || parsed.flags["allow-dangling"] === "true";
   const maxFileBytesRaw = parsed.flags["max-file-bytes"];
   const maxFileBytes = maxFileBytesRaw === undefined ? DEFAULT_MAX_FILE_BYTES : parseByteLimit(maxFileBytesRaw);
   if (maxFileBytes === null) {
@@ -776,6 +820,10 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   const renamePlan = await planRenames(recipe, brand, root, dryRun, warnings);
   const { virtualPath, existsVirtual } = makeVirtualFs(renamePlan);
   const renameSources = new Set(renamePlan.moves.map((move) => path.normalize(move.fromAbs)));
+  const realWebFiles = files.map((file) => relPosix(root, file));
+  const virtualWebFiles = files
+    .map((file) => toPosix(path.relative(root, virtualPath(file))))
+    .filter((rel) => Boolean(rel) && !rel.startsWith(".."));
   const isInsideRenameSource = (targetAbs: string): boolean => {
     const normalized = path.normalize(targetAbs);
     for (const source of renameSources) {
@@ -926,27 +974,27 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     if (isMarkup) {
       const newAssetRefs = replacements > 0 ? extractRelativeAssetRefs(outContent) : oldAssetRefs;
       const oldSet = new Set(oldAssetRefs);
-      // (a) rewritten asset refs (href/src/url()) must still resolve after renames
+      // (a) rewritten asset refs (href/src/url()/srcset) must still resolve
       for (const ref of newAssetRefs) {
         if (replacements === 0 || oldSet.has(ref)) continue;
         const cleaned = stripSpecifierSuffix(ref);
-        const hadExtension = Boolean(path.extname(cleaned));
+        const hadExtension = Boolean(path.extname(cleaned.replace(/^\/+/, "")));
         let oldTargetExisted = false;
         const index = newAssetRefs.indexOf(ref);
         const oldRef = oldAssetRefs.length === newAssetRefs.length ? oldAssetRefs[index] : undefined;
         if (oldRef) {
-          oldTargetExisted = exists(path.resolve(path.dirname(file), stripSpecifierSuffix(oldRef)));
+          oldTargetExisted = resolveAssetReference(root, realWebFiles, file, oldRef, exists) !== null;
         }
         // SPA routes without a file extension were never files; only guard real assets.
         if (hadExtension || oldTargetExisted) {
           refCandidates.push({ fileAbs: file, specifier: ref, kind: "asset" });
         }
       }
-      // (b) unchanged asset refs pointing at a renamed file/dir would break too
+      // (b) untouched refs whose real target exists but whose post-rename target moved
       for (const ref of oldAssetRefs) {
         if (!newAssetRefs.includes(ref)) continue;
-        const target = path.resolve(path.dirname(file), stripSpecifierSuffix(ref));
-        if (isInsideRenameSource(target)) {
+        const real = resolveAssetReference(root, realWebFiles, file, ref, exists);
+        if (real && !resolveAssetReference(root, virtualWebFiles, file, ref, existsVirtual)) {
           refCandidates.push({ fileAbs: file, specifier: ref, kind: "asset" });
         }
       }
@@ -971,7 +1019,7 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     const resolved =
       candidate.kind === "module"
         ? resolveSpecifier(baseFile, candidate.specifier, existsVirtual)
-        : resolveAssetRef(baseFile, candidate.specifier, existsVirtual);
+        : resolveAssetReference(root, virtualWebFiles, baseFile, candidate.specifier, existsVirtual);
     if (resolved) continue;
     const displayRel = toPosix(path.relative(root, baseFile)) || path.basename(baseFile);
     const key = `${displayRel}|${candidate.specifier}|${candidate.kind}`;
@@ -982,7 +1030,12 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   danglingRefs.sort(
     (a, b) => a.file.localeCompare(b.file) || a.specifier.localeCompare(b.specifier) || a.kind.localeCompare(b.kind),
   );
-  if (danglingRefs.length > 0) {
+  if (danglingRefs.length > 0 && allowDangling) {
+    // escape hatch: warn and continue (the refusal object is only for a refusal)
+    for (const entry of danglingRefs) {
+      warnings.push(`dangling ref allowed by --allow-dangling: ${entry.file}:${entry.specifier} (${entry.kind})`);
+    }
+  } else if (danglingRefs.length > 0) {
     const error = `refusing to write — ${danglingRefs.length} relative ref(s) would not resolve after rebrand`;
     if (ctx.json) {
       // exactly one JSON object on stdout for machine callers

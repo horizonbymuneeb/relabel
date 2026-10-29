@@ -1,6 +1,6 @@
 {
   "name": "relabeld",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "White-label any self-hosted app with one command \u2014 deterministic, verified, agent-agnostic.",
   "type": "module",
   "bin": {
