@@ -45,14 +45,20 @@ export async function collectChecks(): Promise<DoctorCheck[]> {
   checks.push({ name: "docker", ok: Boolean(docker), required: false, detail: docker ?? "not found (needed to run apps)" });
 
   let browser = "";
-  for (const candidate of [
-    "/usr/bin/chromium-browser",
+  const envBrowser = process.env.RELABEL_CHROME ?? process.env.RELABEL_CHROMIUM_PATH ?? "";
+  const candidates = [
+    ...(envBrowser ? [envBrowser] : []),
     "/usr/bin/chromium",
     "/usr/bin/google-chrome",
     "/usr/bin/google-chrome-stable",
-  ]) {
-    if (await executable(candidate)) {
-      browser = candidate;
+    "/usr/bin/chromium-browser",
+  ];
+  for (const candidate of candidates) {
+    if (!(await executable(candidate))) continue;
+    // Snap shims and broken wrappers can exist without working; probe by executing.
+    const version = await cmdVersion(candidate, ["--version"]);
+    if (version && /chrom(e|ium)/i.test(version)) {
+      browser = `${candidate} (${version})`;
       break;
     }
   }

@@ -1,7 +1,7 @@
 {
   "name": "relabeld",
   "version": "1.0.0",
-  "description": "White-label any self-hosted app with one command — deterministic, verified, agent-agnostic.",
+  "description": "White-label any self-hosted app with one command \u2014 deterministic, verified, agent-agnostic.",
   "type": "module",
   "bin": {
     "relabeld": "dist/cli.js"
@@ -22,7 +22,8 @@
     "test": "node --test \"test/**/*.test.ts\"",
     "dev": "tsc -w -p tsconfig.json",
     "prepack": "npm run build",
-    "check:pack": "npm pack --dry-run"
+    "check:pack": "npm pack --dry-run",
+    "pretest": "npm run build"
   },
   "keywords": [
     "white-label",

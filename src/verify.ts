@@ -11,12 +11,30 @@ const VIEWPORTS = [
   { name: "mobile", width: 390, height: 844 },
 ] as const;
 
-/** System browser candidates, in order. Override with RELABEL_CHROME. */
-export const BROWSER_CANDIDATES = [
-  process.env.RELABEL_CHROME,
-  "/usr/bin/chromium-browser",
-  "/usr/bin/google-chrome",
-].filter((v): v is string => Boolean(v));
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return undefined;
+}
+
+/**
+ * System browser candidates, in order. Env override aliases (first non-empty wins):
+ * RELABEL_CHROME, then RELABEL_CHROMIUM_PATH (the Docker image sets the latter to
+ * Debian's /usr/bin/chromium).
+ */
+export function browserCandidates(env: Record<string, string | undefined> = process.env): string[] {
+  const envPath = firstNonEmpty(env.RELABEL_CHROME, env.RELABEL_CHROMIUM_PATH);
+  return [
+    envPath,
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+  ].filter((value): value is string => Boolean(value));
+}
+
+/** Candidates resolved once at module load (launchBrowser re-resolves to honour late env). */
+export const BROWSER_CANDIDATES = browserCandidates();
 
 const PROBE_EXPR = `(() => {
   const body = document.body;
@@ -101,7 +119,7 @@ export async function launchBrowser(opts: { cdp?: string; executablePath?: strin
   if (opts.cdp) {
     return chromium.connectOverCDP(opts.cdp);
   }
-  const candidates = [opts.executablePath, ...BROWSER_CANDIDATES].filter(
+  const candidates = [opts.executablePath, ...browserCandidates()].filter(
     (v): v is string => Boolean(v),
   );
   const tried: string[] = [];
@@ -133,6 +151,45 @@ function clip(s: string, max = 600_000): string {
 
 function schemeless(url: string): string {
   return url.replace(/^https?:\/\//i, "");
+}
+
+/** A browser we launched ourselves may be closed; a CDP-attached browser is shared. */
+export function shouldCloseBrowser(cdp?: string): boolean {
+  return !cdp;
+}
+
+/**
+ * Horizontal overflow: `scrollWidth - innerWidth <= 0` passes. A negative difference
+ * is normal (classic scrollbars make `innerWidth` wider than the document's
+ * `scrollWidth`) and must not fail the gate. Only positive overflow fails.
+ */
+export function evaluateOverflow(
+  scrollWidth: number,
+  innerWidth: number,
+): { pass: boolean; diff: number; detail: string } {
+  const diff = scrollWidth - innerWidth;
+  return {
+    pass: diff <= 0,
+    diff,
+    detail: `scrollWidth ${scrollWidth} − innerWidth ${innerWidth} = ${diff}`,
+  };
+}
+
+/**
+ * Ignore the browser's own console noise for an implicit `/favicon.ico` 404: Chromium
+ * logs "Failed to load resource" when it auto-requests the missing default icon. Real
+ * console errors (other URLs, other messages) still fail the check.
+ */
+export function isImplicitFaviconNoise(text: string, url: string): boolean {
+  if (!/failed to load resource/i.test(text)) return false;
+  if (!url) return false;
+  try {
+    const pathname = new URL(url).pathname.replace(/\/+$/, "");
+    return pathname.toLowerCase().endsWith("/favicon.ico");
+  } catch {
+    const withoutQuery = url.replace(/[?#].*$/, "");
+    return /(?:^|\/)favicon\.ico$/i.test(withoutQuery);
+  }
 }
 
 /** Read one attribute value from a raw HTML tag string (quoted or unquoted). */
@@ -281,6 +338,7 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
   const probes: Probe[] = [];
   const pageErrors: string[] = [];
   const consoleErrors: string[] = [];
+  let ignoredFavicon404 = 0;
   let faviconProbe: FaviconProbe | null = null;
   let launchError: string | null = null;
   const brandAssets = await loadBrandAssets(brand, brandDir);
@@ -316,7 +374,19 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
           }
         }
         page.on("console", (msg) => {
-          if (msg.type() === "error") consoleErrors.push(clip(msg.text(), 500));
+          if (msg.type() !== "error") return;
+          const text = clip(msg.text(), 500);
+          let locationUrl = "";
+          try {
+            locationUrl = msg.location()?.url ?? "";
+          } catch {
+            locationUrl = "";
+          }
+          if (isImplicitFaviconNoise(text, locationUrl)) {
+            ignoredFavicon404 += 1;
+            return;
+          }
+          consoleErrors.push(text);
         });
         page.on("pageerror", (err) => pageErrors.push(clip(err?.message ?? String(err), 500)));
 
@@ -368,7 +438,8 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
   } catch (err) {
     launchError = err instanceof Error ? err.message : String(err);
   } finally {
-    if (browser) await browser.close().catch(() => undefined);
+    // Never close a CDP-attached browser: it is a shared, externally-owned session.
+    if (browser && shouldCloseBrowser(opts.cdp)) await browser.close().catch(() => undefined);
   }
 
   // ---- brand-strings: zero old-brand variants in rendered text + HTML ----
@@ -377,8 +448,8 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
     checks.push({
       id: "brand-strings",
       title: "old brand strings absent",
-      status: "pass",
-      detail: "no old-brand variants configured",
+      status: "fail",
+      detail: "no old-brand variants configured; run scan/init",
     });
   } else if (probes.length === 0) {
     checks.push({
@@ -426,16 +497,20 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
 
   // ---- console-errors: zero page errors / console errors ----
   const errorCount = pageErrors.length + consoleErrors.length;
+  const ignoredSuffix =
+    ignoredFavicon404 > 0
+      ? ` (ignored ${ignoredFavicon404} implicit /favicon.ico 404${ignoredFavicon404 === 1 ? "" : "s"})`
+      : "";
   checks.push({
     id: "console-errors",
     title: "no console/page errors",
     status: errorCount === 0 ? "pass" : "fail",
     detail:
-      errorCount === 0
+      (errorCount === 0
         ? "0 page errors, 0 console errors"
         : `${errorCount} error${errorCount === 1 ? "" : "s"} (${pageErrors.length} page, ${consoleErrors.length} console): ${[...pageErrors, ...consoleErrors]
             .slice(0, 3)
-            .join(" | ")}`,
+            .join(" | ")}`) + ignoredSuffix,
   });
 
   // ---- overflow: scrollWidth - innerWidth === 0 per viewport ----
@@ -460,12 +535,12 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
       });
       continue;
     }
-    const diff = probe.scrollWidth - probe.innerWidth;
+    const overflow = evaluateOverflow(probe.scrollWidth, probe.innerWidth);
     checks.push({
       id,
       title: `no horizontal overflow (${vp.width}×${vp.height})`,
-      status: diff === 0 ? "pass" : "fail",
-      detail: `scrollWidth ${probe.scrollWidth} − innerWidth ${probe.innerWidth} = ${diff}`,
+      status: overflow.pass ? "pass" : "fail",
+      detail: overflow.detail,
     });
   }
 

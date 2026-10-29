@@ -16,14 +16,19 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 FROM node:22-bookworm-slim AS runtime
+# Debian's chromium package installs /usr/bin/chromium. Both env spellings are
+# accepted by the CLI (RELABEL_CHROME is canonical, RELABEL_CHROMIUM_PATH is kept
+# for compatibility with earlier images).
 ENV NODE_ENV=production \
+    RELABEL_CHROME=/usr/bin/chromium \
     RELABEL_CHROMIUM_PATH=/usr/bin/chromium
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         chromium \
         fonts-liberation \
         ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && /usr/bin/chromium --version
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY package.json ./

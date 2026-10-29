@@ -36,13 +36,13 @@
       "id": "screenshots",
       "title": "desktop + mobile screenshots",
       "status": "pass",
-      "detail": "saved desktop (20371 bytes), mobile (15890 bytes) in /home/ubuntu/work/relabel/demo/shots"
+      "detail": "saved desktop (20371 bytes), mobile (15879 bytes) in /home/ubuntu/work/relabel/demo/shots"
     },
     {
       "id": "favicon",
       "title": "favicon matches brand asset",
-      "status": "fail",
-      "detail": "favicon fetch failed: apiRequestContext.get: Protocol \"data:\" not supported. Expected \"http:\""
+      "status": "pass",
+      "detail": "HTTP 200, sha256 1f7b4df28ef0… matches brand logo public/icon.svg (status.muneebs.space/icon.svg)"
     }
   ],
   "screenshots": [
@@ -56,9 +56,9 @@
     }
   ],
   "summary": {
-    "passed": 6,
-    "failed": 1,
+    "passed": 7,
+    "failed": 0,
     "skipped": 0
   },
-  "generatedAt": "2026-10-28T23:23:10.947Z"
+  "generatedAt": "2026-10-29T00:02:53.124Z"
 }

@@ -1,7 +1,7 @@
 ---
 name: relabel
 description: White-label a self-hosted app, then prove it headlessly.
-version: 0.1.0
+version: 1.0.0
 author: Muneeb Anjum
 license: MIT
 platforms: [linux, macos, windows]

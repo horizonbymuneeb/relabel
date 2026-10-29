@@ -1,15 +1,15 @@
 # Quickstart
 
 This walkthrough takes a self-hosted app from "wearing the upstream name" to "verified white-label"
-with the commands that exist in v0.1.0. Every command below was run against a fixture app and a
+with the commands that exist in v1.0.0. Every command below was run against a fixture app and a
 local HTTP server; the shape of the output is what you should see.
 
 ## 0. Prerequisites
 
 - Node.js >= 20.
-- A headless Chromium for `verify`: the launcher tries `RELABEL_CHROME`, then
-  `/usr/bin/chromium-browser`, then `/usr/bin/google-chrome`. If Chromium lives elsewhere, set
-  `RELABEL_CHROME=/path/to/chrome` or pass `verify --executable /path/to/chrome`.
+- A headless Chromium for `verify`: the launcher tries `RELABEL_CHROME` (or `RELABEL_CHROMIUM_PATH`),
+  then `/usr/bin/chromium-browser`, `/usr/bin/google-chrome`, and `/usr/bin/chromium`. If Chromium
+  lives elsewhere, set `RELABEL_CHROME=/path/to/chrome` or pass `verify --executable /path/to/chrome`.
 - The app source on disk, plus a way to run it (`docker compose up -d`, or a dev server).
 
 Install relabeld:
@@ -70,6 +70,7 @@ relabeld init ./my-app \
 | Flag | Required | Meaning |
 |---|---|---|
 | `--name <text>` | yes | New brand name, used verbatim in titles, env defaults, and the compose override. |
+| `--from <dir>` | no | Source directory, as an alias for the positional `[dir]` (the positional wins if both are given). |
 | `--domain <host>` | no | Public domain; used by `deploy` and recorded in the spec. |
 | `--primary <#hex>` | no | Primary colour, default `#2563EB`. |
 | `--accent <#hex>` | no | Accent colour. |
@@ -106,6 +107,9 @@ favicon: brand/favicon.svg
 
 `init` does not modify the app. All edits happen in `apply`.
 
+If the app is covered by a bundled recipe (for example `uptime-kuma`), `init` behaves the same way;
+the recipe is picked up by `apply`, not by `init`.
+
 ## 3. Apply the brand
 
 ```bash
@@ -141,10 +145,37 @@ relabeld apply ./my-app --brand ./my-app/brand.yaml
 relabeld apply ./my-app --brand ./my-app/brand.yaml --json
 ```
 
+If the app is covered by a recipe, `apply` auto-detects it from `package.json`/directory name (or use
+`--recipe <id|path>`) and adds a rename phase after the text patch. Example on an Uptime Kuma-shaped
+tree:
+
+```
+relabeld apply — /srv/uptime-kuma
+brand: Nova Status (/srv/uptime-kuma/brand.yaml)
+recipe: uptime-kuma (auto-detected: .../recipes/uptime-kuma/recipe.yaml)
+mode: DRY-RUN — no files written
+
+changed 5 files, 8 replacements
+  ...
+renames planned 1:
+  server/uptime-kuma-server.js                   → server/nova-status-server.js                   would-rename
+
+skipped 2:
+  docker-compose.yml                         docker image ref preserved (FROM/image) (1 lines)
+  Dockerfile                                 docker image ref preserved (FROM/image) (1 lines)
+```
+
+The rename runs before the app is started, so rewritten `require("./uptime-kuma-server")` references
+resolve to the new filename. Docker image references (`FROM ...`, `image: ...`) are not rewritten
+unless the recipe has a `files:` rule for that file; this keeps upstream image namespaces intact.
+
 Behaviour you can rely on:
 
 - Replacements are word-boundary and case-preserving: `Acme Status` → `Nova Status`,
   `acme-status` → `nova-status`, `ACME-STATUS` → `NOVA-STATUS`.
+- Recipe-driven file renames happen after the text patch and are idempotent; a re-run reports the
+  rename as already done instead of renaming twice.
+- Docker `FROM`/`image:` references are never rewritten implicitly.
 - `brand.yaml` itself and the generated override are never rewritten.
 - License files and copyright/license lines are skipped; `brand.keep` entries are protected.
 - The configured logo/favicon is copied over every detected asset target of that kind.
@@ -158,13 +189,19 @@ Bring the app up with the override so the new name reaches the runtime environme
 docker compose -f docker-compose.yml -f docker-compose.relabel.yml up -d
 ```
 
+If the app serves a prebuilt bundle (Vite, webpack, a Go/Rust binary), rebuild it before recreating
+the container; patching source files alone does not change a served build. The demo in
+[demo-gallery.md](demo-gallery.md) does exactly that rebuild between `apply` and `verify`.
+
 ## 4. Serve the app
 
 Verification runs against the **served app**, not the source tree. Pick one path:
 
 - Compose (above), then note the published port.
 - `relabeld deploy --brand brand.yaml --dry-run` to render the nginx vhost and the exact commands;
-  `--apply` writes the vhost, enables it, and reloads nginx (opt-in, root required).
+  `--apply` writes the vhost, enables it, and reloads nginx (opt-in, root required). An existing
+  certbot-managed TLS vhost is preserved unless you add `--force`, which writes a timestamped backup
+  before overwriting.
 
 ## 5. Verify
 
@@ -195,6 +232,11 @@ PASS    favicon           HTTP 200, sha256 dc416a69… matches status.example.co
   1440x980 and 390x844.
 - `--json` prints exactly one `VerifyResult` object on stdout; `--out` also writes it to a file.
 - `--cdp http://127.0.0.1:9223` reuses an existing Chromium instead of launching one.
+- `--executable /path/to/chrome` launches a specific browser binary; `RELABEL_CHROME` sets the same
+  default through the environment (`RELABEL_CHROMIUM_PATH` is an accepted alias, used by the Docker
+  image).
+- An implicit `/favicon.ico` 404 is tolerated in the console check and reported as
+  `(ignored 1 implicit /favicon.ico 404)`; the favicon check itself still fails an explicit 404.
 
 ## 6. Render the report
 
@@ -212,7 +254,8 @@ relabeld verify --url "$APP_URL" --brand brand.yaml --json --out verify.json
 relabeld report --input verify.json --out report.html
 ```
 
-`verify` exits `0` only when all seven checks pass, so the first command is the gate. See
+`verify` exits `0` when no check failed (a skipped check does not fail the gate), so the first command
+is the gate. See
 [docs/agents.md](agents.md) for the composite GitHub Action and the MCP wrapper, and
 [docs/verification.md](verification.md) for check semantics.
 
@@ -238,11 +281,13 @@ relabeld --json scan ./my-app
 | `could not launch headless Chromium` | No known browser binary. Set `RELABEL_CHROME=/path/to/chrome`, pass `verify --executable <path>`, or use `--cdp`. |
 | `verify: --url is required` (exit 2) | `verify` has no default URL; pass the URL of the running app. |
 | `brand-strings` fails with `"Old Name" ×N` | The served page still contains an upstream variant. Rebuild/redeploy after `apply`; if the string is data (not UI), add it to the recipe or fix the runtime config. |
-| `favicon` is `SKIP` | `brand.yaml` has no `favicon:` entry. Add one and re-run. |
+| `favicon` is `SKIP` | Either `brand.yaml` configures no `favicon:`/`logo:` (add one and re-run), the page's icon is a runtime-generated `data:` URI whose bytes differ from the brand asset, or the scheme is not http(s)/data:. A skip does not fail the gate. |
+| `favicon` fails with `HTTP 404` | The served HTML points at an icon path the deployment does not ship. Fix the asset path or configure `brand.favicon`/`brand.logo` to the bytes the app actually serves. |
 | `favicon` fails with a hash mismatch | The served favicon is not the file `brand.yaml` points at; rebuild the app image or copy the asset. |
-| Overflow fails by a few pixels | The page really does overflow at that viewport; fix layout or reduce width. `verify` reports the exact numbers. |
+| Overflow fails | Only positive overflow fails. `verify` reports `scrollWidth - innerWidth`; if the value is positive the page really does overflow at that viewport, so fix the layout or reduce width. |
 | `brand.yaml already exists` | Pass `--force` to `init`, or edit the existing spec. |
 | `verify: cannot read brand spec` (exit 2) | Wrong path; `--brand` resolves against the cwd. |
 | `apply: brand file not found` | Run `init` first, or pass `--brand <path>`. |
+| `apply: recipe not found` | `--recipe` accepts a recipe id in the library, a path to `recipe.yaml`, or a directory; omit the flag to auto-detect from the app. |
 | `verify: Unknown option '--cwd'` | `verify` parses strictly, so global options must come before the command for it: `relabeld --cwd DIR verify ...`. |
 | `doctor` reports `FAIL` | A required check failed: node older than 20 or no chromium/chrome binary. Fix that first; deploy-only warnings (nginx, certbot, Cloudflare token) do not fail the command. |

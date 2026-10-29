@@ -52,8 +52,8 @@ Or with a global install: `"command": "relabeld"`, `"args": ["mcp"]`. Requires N
 | Tool | Arguments | Result |
 |---|---|---|
 | `relabel_scan` | `root?` (default `.`), `cwd?` | `ScanResult` JSON. Read-only. |
-| `relabel_init` | `name` (required), `domain?`, `force?`, `cwd?` | `{ path, brand }` for the written `brand.yaml`. Refuses to overwrite without `force`. |
-| `relabel_apply` | `dryRun?`, `cwd?` | `{ changed, skipped, ... }` plan or the applied result. `dryRun` writes nothing. |
+| `relabel_init` | `name` (required), `domain?`, `from?`, `force?`, `cwd?` | `{ path, brand }` for the written `brand.yaml`. `from` is the source directory (same as the CLI positional). Refuses to overwrite without `force`. |
+| `relabel_apply` | `dryRun?`, `cwd?` | `{ changed, skipped, renames, ... }` plan or the applied result. `dryRun` writes nothing. A recipe is auto-detected from the app (there is no MCP argument for it in v1.0.0). |
 | `relabel_verify` | `url` (required), `brand?`, `shots?`, `cdp?`, `cwd?` | `VerifyResult` JSON. A run with `summary.failed > 0` comes back as an MCP error result (`isError: true`) with the CLI output attached, so the client cannot mistake a failed gate for success. |
 | `relabel_report` | `input`, `out` (both required), `cwd?` | `{ out, bytes, images, summary, generatedAt }`. |
 
@@ -108,7 +108,7 @@ exit `1`.
 Typical human output:
 
 ```
-relabeld skill install 0.1.0
+relabeld skill install 1.0.0
   claude  /home/me/.claude/skills/relabel
     references/brand-and-recipes.md (3093 bytes)
     references/mcp.md (2464 bytes)
@@ -151,19 +151,19 @@ step, so it always runs the published CLI rather than building this checkout.
 |---|---|---|---|
 | `url` | yes | — | URL of the running app to verify. |
 | `brand` | no | `brand.yaml` | Path to the brand spec, relative to the repository root. |
-| `version` | no | `latest` | relabeld npm version to run. |
+| `version` | no | `1.0.0` | Pinned relabeld npm version to run. Bump it deliberately instead of tracking `latest` in a release gate. |
 | `cdp` | no | — | Chrome DevTools endpoint to reuse instead of launching Chromium. |
 | `report` | no | — | Output path for the self-contained HTML report; uploaded as the `relabel-report` artifact. |
-| `fail-on` | no | `brand,console,overflow` | Comma-separated check groups that should fail the gate. A group matches a failed check id exactly, as a prefix (`overflow` matches `overflow-desktop`), or by the id's first segment. Groups that exist in the check set: `brand`, `console`, `overflow`, `screenshots`, `favicon`. |
+| `fail-on` | no | `brand,console,overflow` | Comma-separated check groups that fail the gate. Singular and plural are normalized, so `screenshot` and `screenshots` both match. A group matches a failed check id exactly, as a prefix (`overflow` matches `overflow-desktop`), or by the id's first segment. Groups in the check set: `brand`, `console`, `overflow`, `screenshots`, `favicon`. |
 
 What the action does:
 
 1. Runs `verify --json --out <runner-temp>/relabel-verify.json` (plus `--cdp` when set). The JSON proof
    is always produced, even on a failing run.
 2. Applies the `fail-on` policy from that JSON: a failed check fails the gate only if it matches a
-   configured group (a group matches by check id or id prefix, so `brand` covers `brand-strings` and
-   `brand-title`). Failures outside the policy are reported as a warning and the gate passes. Note that
-   the check id is `screenshots`, so the group is spelled `screenshots`.
+   configured group (a group matches by check id, id prefix, or the id's first segment, so `brand`
+   covers `brand-strings` and `brand-title`; `screenshot`/`screenshots` both match `screenshots`).
+   Failures outside the policy are reported as a warning and the gate passes.
 3. When `report` is set, runs `report --input <json> --out <report>` and uploads the HTML file as the
    `relabel-report` artifact (14-day retention).
 
@@ -188,8 +188,9 @@ relabeld doctor          # human table, exit 1 when a required check fails
 relabeld doctor --json   # { checks: [{ name, ok, required, detail }], ok }
 ```
 
-Required checks are node >= 20 and a chromium/chrome binary. docker, nginx, certbot, and a Cloudflare
-token are warnings because they only matter for running the app or for `deploy`.
+Required checks are node >= 20 and a working chromium/chrome binary (the browser line shows the path
+and version it executed). docker, nginx, certbot, and a Cloudflare token are warnings because they
+only matter for running the app or for `deploy`.
 
 
 ## Recommended agent loop

@@ -495,14 +495,21 @@ test("apply --dry-run: plans renames, moves nothing, writes nothing", async () =
 test("apply: missing rename source is a non-fatal warning, not a crash", async () => {
   const copy = await moduleWorkspace();
   const library = await recipeLibrary(
-    recipeYaml({ renames: [["server/does-not-exist.js", "server/{{slug}}-ghost.js"]] }),
+    recipeYaml({
+      renames: [
+        ["server/pulse-status-server.js", "server/{{slug}}-server.js"],
+        ["server/does-not-exist.js", "server/{{slug}}-ghost.js"],
+      ],
+    }),
   );
   await withRecipeLibrary(library, async () => {
     await initWithBrand(copy);
     const { code, payload, errors } = await applyJson(copy);
     assert.equal(code, 0, errors.join("\n"));
-    assert.equal(payload.renames[0].status, "missing");
-    assert.equal(payload.renames[0].written, false);
+    const ghost = payload.renames.find((op) => op.from === "server/does-not-exist.js");
+    assert.ok(ghost);
+    assert.equal(ghost.status, "missing");
+    assert.equal(ghost.written, false);
     assert.ok(
       payload.warnings.some((warning) => /rename source missing: server\/does-not-exist\.js/.test(warning)),
       `missing warning reported, got: ${JSON.stringify(payload.warnings)}`,
@@ -555,5 +562,84 @@ test("apply: CLI --recipe <id> selects the recipe explicitly", async () => {
       status = (error as { status?: number }).status ?? -1;
     }
     assert.equal(status, 1, "unknown explicit recipe exits 1");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* task-10: B4 dangling-ref guard + M6 compose command                */
+/* ------------------------------------------------------------------ */
+
+test("apply: B4 — without a matching recipe, dangling module refs stop the write (exit 1)", async () => {
+  const copy = await moduleWorkspace();
+  const emptyLibrary = await mkdtemp(path.join(tmpdir(), "relabel-empty-lib-"));
+  tempDirs.push(emptyLibrary);
+  await withRecipeLibrary(emptyLibrary, async () => {
+    await initWithBrand(copy);
+    const before = await snapshot(copy);
+
+    const { ctx, errors } = makeCtx(ROOT);
+    const code = await applyRun([copy, "--brand", "brand.yaml"], ctx);
+    assert.equal(code, 1, "must refuse to write a tree with broken module refs");
+    const stderr = errors.join("\n");
+    assert.match(stderr, /refusing to write/i);
+    assert.match(stderr, /server\/index\.js:\.\/nova-demo-server/);
+    assert.match(stderr, /server\/jobs\.js:\.\/nova-demo-server/);
+    assert.match(stderr, /nothing was written/i);
+
+    // nothing was written and the old module was NOT renamed
+    assert.deepEqual(await snapshot(copy), before);
+    assert.ok(await fileExists(path.join(copy, "server/pulse-status-server.js")));
+    assert.equal(await fileExists(path.join(copy, "server/nova-demo-server.js")), false);
+    assert.match(await read(copy, "server/index.js"), /require\("\.\/pulse-status-server"\)/);
+    assert.equal(await fileExists(path.join(copy, "docker-compose.relabel.yml")), false);
+
+    // dry-run hits the same guard (reported, still no writes)
+    const dry = makeCtx(ROOT);
+    assert.equal(await applyRun([copy, "--brand", "brand.yaml", "--dry-run"], dry.ctx), 1);
+    assert.match(dry.errors.join("\n"), /server\/index\.js:\.\/nova-demo-server/);
+    assert.deepEqual(await snapshot(copy), before);
+  });
+});
+
+test("apply: B4 — with the recipe rename the same repo passes and refs resolve", async () => {
+  const copy = await moduleWorkspace();
+  const library = await recipeLibrary();
+  await withRecipeLibrary(library, async () => {
+    await initWithBrand(copy);
+    const first = await applyJson(copy);
+    assert.equal(first.code, 0, first.errors.join("\n"));
+    assert.equal(first.payload.renames[0].status, "renamed");
+    const fromIndex = createRequire(path.join(copy, "server/index.js"));
+    assert.ok(fromIndex.resolve("./nova-demo-server"));
+
+    const afterFirst = await snapshot(copy);
+    const second = await applyJson(copy);
+    assert.equal(second.code, 0);
+    assert.deepEqual(second.payload.changed, []);
+    assert.equal(second.payload.renames[0].status, "already");
+    assert.deepEqual(await snapshot(copy), afterFirst);
+  });
+});
+
+test("apply: M6 — printed compose command includes the base compose file", async () => {
+  const copy = await moduleWorkspace();
+  const library = await recipeLibrary();
+  await withRecipeLibrary(library, async () => {
+    await initWithBrand(copy);
+
+    const { ctx, errors, logs } = makeCtx(ROOT);
+    assert.equal(await applyRun([copy, "--brand", "brand.yaml"], ctx), 0, errors.join("\n"));
+    const human = logs.join("\n");
+    assert.match(
+      human,
+      /docker compose -f docker-compose\.yml -f docker-compose\.relabel\.yml up -d/,
+      `compose command must include the base file, got:\n${human}`,
+    );
+    assert.ok(!/@docker compose -f docker-compose\.relabel\.yml up -d/.test(human), "overlay-only command is wrong");
+
+    // JSON exposes the same base + overlay pair
+    const payload = (await applyJson(copy)).payload;
+    assert.equal(payload.compose?.base, "docker-compose.yml");
+    assert.equal(payload.compose?.file, "docker-compose.relabel.yml");
   });
 });

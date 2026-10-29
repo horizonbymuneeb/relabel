@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import type { Ctx } from "./types.js";
 
@@ -100,11 +100,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
   return mod.run(rest, ctx);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main()
+// This module is the CLI entry point (bin). Run unconditionally: comparing
+// import.meta.url with process.argv[1] breaks under npm/npx shims and symlinks
+// (argv[1] is the shim path, import.meta.url is the realpath), which made the
+// installed binary a silent no-op.
+main()
     .then((code) => process.exit(code))
     .catch((err) => {
       console.error(err?.stack ?? String(err));
       process.exit(1);
     });
-}

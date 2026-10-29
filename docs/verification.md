@@ -12,15 +12,15 @@ self-contained HTML report by `relabeld report`.
 |---|---|
 | `brand-strings` | No upstream brand variant appears in the rendered DOM text or page HTML (case-insensitive, variants taken from `brand.yaml`). |
 | `brand-title` | The new brand name appears in `document.title`. |
-| `console-errors` | No `pageerror` and no `console` message of type `error`. Third-party beacons are still counted; fix them or allowlist in a future version. |
-| `overflow-desktop` | `document.documentElement.scrollWidth - window.innerWidth === 0` at 1440×980. |
+| `console-errors` | No `pageerror` and no `console` message of type `error`. Chromium's implicit `/favicon.ico` 404 message is ignored (and counted in the detail: `0 page errors, 0 console errors (ignored 1 implicit /favicon.ico 404)`); any other resource-load error still fails. Third-party beacons are still counted. |
+| `overflow-desktop` | `document.documentElement.scrollWidth - window.innerWidth <= 0` at 1440×980 (only positive overflow fails; negative is normal with classic scrollbars). |
 | `overflow-mobile` | Same assertion at 390×844 (drawer/scroll layout must not overflow). |
 | `screenshots` | Desktop and mobile screenshots written to `--shots`. |
-| `favicon` | The favicon responds 200 (or is a `data:` URI) and its sha256 matches the brand asset referenced by `brand.yaml`; skipped when no brand favicon is configured. |
+| `favicon` | The served HTML `<link rel="icon">` is authoritative (the runtime DOM href is only a fallback, then `/favicon.ico`). `pass`: http(s) icon returns 200 and its sha256 matches a configured brand asset (`brand.favicon` or `brand.logo`), or a `data:` icon decodes to matching bytes. `fail`: http(s) 404, http(s) fetch error, or 200 with a sha256 that matches no configured brand asset. `skip`: no `brand.favicon`/`brand.logo` configured, a `data:` icon that decodes but differs, an undecodable `data:` icon, or a `blob:`/`about:`/other scheme. |
 
 ## Exit codes
 
-- `0` — every check passed
+- `0` — no check failed (passes and skips; a skipped check does not fail the gate)
 - `1` — at least one check failed (report + screenshots still written)
 - `2` — usage error (missing `--url` or unreadable `brand.yaml`)
 

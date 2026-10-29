@@ -17,9 +17,9 @@ relabeld verify --url https://status.example.com --brand brand.yaml --json
 relabeld report --input verify.json --out report.html
 ```
 
-Status: v0.1.0. Every command in the table below is implemented: `scan`, `init`, `apply`, `verify`,
+Status: v1.0.0. Every command in the table below is implemented: `scan`, `init`, `apply`, `verify`,
 `report`, `recipe`, `deploy`, `doctor`, `mcp`, and `skill`. The test suite and the commands shown in
-this README exercise the same code paths.
+this README exercise the same code paths. Release notes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Contents
 
@@ -39,9 +39,9 @@ this README exercise the same code paths.
 ## Requirements
 
 - Node.js >= 20 (the CLI is plain ESM, no build step at runtime).
-- A headless Chromium for `verify`. The launcher tries `RELABEL_CHROME`, then
-  `/usr/bin/chromium-browser`, then `/usr/bin/google-chrome`; alternatively point it at an existing
-  DevTools endpoint with `--cdp`.
+- A headless Chromium for `verify`. The launcher tries `RELABEL_CHROME` (or `RELABEL_CHROMIUM_PATH`,
+  used by the Docker image), then `/usr/bin/chromium-browser`, `/usr/bin/google-chrome`, and
+  `/usr/bin/chromium`; alternatively point it at an existing DevTools endpoint with `--cdp`.
 - Optional, only for `deploy --apply`: nginx, systemd, certbot, and root access.
 
 ## Install
@@ -93,8 +93,8 @@ relabeld verify --url http://127.0.0.1:3001 --brand ./app/brand.yaml --json --ou
 relabeld report --input verify.json --out report.html
 ```
 
-`apply` is idempotent: a second run reports zero changes. `verify` exits `0` only when all seven
-checks pass; see [Verification](#verification). The full walkthrough, including the compose
+`apply` is idempotent: a second run reports zero changes. `verify` exits `0` when no check failed (a
+skipped check, such as an unconfigured favicon, does not fail the gate); see [Verification](#verification). The full walkthrough, including the compose
 override and CI wiring, is in [docs/quickstart.md](docs/quickstart.md).
 
 ## Commands
@@ -102,12 +102,12 @@ override and CI wiring, is in [docs/quickstart.md](docs/quickstart.md).
 | Command | Flags | What it does |
 |---|---|---|
 | `scan` | `[dir] [--json] [--save]` | Detect brand surfaces: strings, configs, docs, CI, license lines, logo/favicon assets. Read-only unless `--save` writes `.relabel/scan.json` inside `[dir]`. |
-| `init` | `[dir] --name <brand> [--domain <host>] [--primary <#hex>] [--accent <#hex>] [--logo <path>] [--favicon <path>] [--email-from <addr>] [--force] [--json]` | Write `brand.yaml` from the scan plus the given brand. Refuses to overwrite without `--force`. |
-| `apply` | `[dir] [--brand <file>] [--dry-run] [--json]` | Patch strings (case-preserving, word-boundary), copy logo/favicon assets, write `docker-compose.relabel.yml`. Skips license files and copyright lines. |
-| `verify` | `--url <URL> [--brand <file>] [--shots <dir>] [--cdp <endpoint>] [--out <file>] [--json]` | Headless proof: 7 checks, screenshots, exit code as the gate. Default brand file `brand.yaml`; default shots dir `.relabel/verify`. |
+| `init` | `[dir] --name <brand> [--from <dir>] [--domain <host>] [--primary <#hex>] [--accent <#hex>] [--logo <path>] [--favicon <path>] [--email-from <addr>] [--force] [--json]` | Write `brand.yaml` from the scan plus the given brand. `--from` is an alias for the positional directory. Refuses to overwrite without `--force`. |
+| `apply` | `[dir] [--brand <file>] [--recipe <id\|path>] [--dry-run] [--json]` | Patch strings (case-preserving, word-boundary), copy logo/favicon assets, apply recipe file renames, write `docker-compose.relabel.yml`. Skips license files and copyright lines, and never rewrites docker image refs. |
+| `verify` | `--url <URL> [--brand <file>] [--shots <dir>] [--cdp <endpoint>] [--executable <path>] [--out <file>] [--json]` | Headless proof: 7 checks, screenshots, exit code as the gate. Default brand file `brand.yaml`; default shots dir `.relabel/verify`. |
 | `report` | `--input <verify.json> --out <report.html> [--json]` | Render a self-contained HTML report with inline CSS and base64 screenshots. |
 | `recipe` | `<list \| show <id> \| add <path>> [--json] [--force]` | Work with the bundled per-app recipe library. `list` validates every recipe and exits non-zero if any is invalid. |
-| `deploy` | `[dir] --brand <file> (--dry-run \| --apply) [--port <n>] [--certbot]` | Render an nginx vhost and optionally create a Cloudflare A record; `--apply` writes and reloads nginx. One mode is mandatory. |
+| `deploy` | `[dir] --brand <file> (--dry-run \| --apply) [--port <n>] [--force] [--certbot]` | Render an nginx vhost and optionally create a Cloudflare A record; `--apply` writes and reloads nginx. Existing certbot-managed TLS vhosts are preserved unless `--force`. One mode is mandatory. |
 | `mcp` | (none) | MCP stdio server exposing five tools: `relabel_scan`, `relabel_init`, `relabel_apply`, `relabel_verify`, `relabel_report`. |
 | `skill` | `install --agent <claude\|codex\|dsh\|all> [--prefix <dir>] [--no-verify]` or `list` | Copy the bundled agent skill into the agent's skill root (`~/.claude/skills`, `~/.codex/skills`, `~/.dsh-home/skills`) and validate the install. |
 | `doctor` | `[--json]` | Check the local environment: node, docker, chromium, nginx, certbot, Cloudflare token. Exits `1` when a required check (node, browser) fails. |
@@ -124,11 +124,11 @@ screenshots, and exits non-zero if any check failed. The check set is the defini
 |---|---|
 | `brand-strings` | 0 occurrences of any old-brand `variants` entry in the rendered DOM text or page HTML (case-insensitive). |
 | `brand-title` | `document.title` contains the new brand name at both viewports. |
-| `console-errors` | 0 `pageerror` events and 0 console messages of type `error`. |
-| `overflow-desktop` | `scrollWidth - innerWidth === 0` at 1440x980. |
+| `console-errors` | 0 `pageerror` events and 0 console messages of type `error`. Chromium's implicit `/favicon.ico` 404 message is ignored and counted in the detail; any other resource error still fails. |
+| `overflow-desktop` | `scrollWidth - innerWidth <= 0` at 1440x980 (only positive overflow fails). |
 | `overflow-mobile` | Same at 390x844. |
 | `screenshots` | `desktop.png` and `mobile.png` written to `--shots`. |
-| `favicon` | Favicon responds 200 and its sha256 matches the brand asset in `brand.yaml`; skipped when no favicon is configured. |
+| `favicon` | The served HTML icon resolves to bytes (http(s) 200, or a decoded `data:` URI) whose sha256 matches a configured brand asset (`brand.favicon` or `brand.logo`); skipped when no brand asset is configured or a runtime-generated `data:` icon differs. |
 
 Screenshots are viewport-sized PNGs (not full-page). Verification runs against the deployed app, so
 rebuild and redeploy first. Reference for the check semantics and exit codes:
@@ -161,10 +161,14 @@ relabeld recipe list --json
 ```
 
 The recipe library lives next to the installed package (`recipes/`); `RELABELD_RECIPES_DIR`
-overrides it. In v0.1.0 the CLI validates, lists, shows and installs recipes; `scan` and `apply` do
-not consume recipe files automatically yet. The variant knowledge that drives patching and
-verification lives in `brand.yaml` (`init` records the scan's `brandTokens` as `variants`). Format,
-validation rules, and contribution steps: [docs/recipe-spec.md](docs/recipe-spec.md).
+overrides it. `apply` consumes a recipe for file renames after a brand rename breaks
+`require()`/`import` paths, and for the `files:` opt-in that allows rewriting docker image refs of a
+specific file. The recipe is auto-detected from the app's `package.json` name or directory name;
+`--recipe <id|path>` forces one. `scan`, `verify`, and `deploy` do not read recipes, and the
+`strings`/`assets`/`env`/`compose`/`verify` recipe keys are recorded by `recipe show` but not consumed
+by those commands. The variant knowledge that drives patching and verification lives in `brand.yaml`
+(`init` records the scan's `brandTokens` as `variants`). Format, validation rules, and contribution
+steps: [docs/recipe-spec.md](docs/recipe-spec.md).
 
 ## Deploy
 
@@ -174,7 +178,13 @@ validation rules, and contribution steps: [docs/recipe-spec.md](docs/recipe-spec
 relabeld deploy --brand brand.yaml --dry-run --port 3001   # print the vhost + commands, write nothing
 relabeld deploy --brand brand.yaml --apply --port 3001     # write vhost, enable, reload nginx
 relabeld deploy --brand brand.yaml --apply --certbot       # also run the printed certbot command
+relabeld deploy --brand brand.yaml --apply --force         # rewrite a certbot-managed TLS vhost
 ```
+
+`--apply` is idempotent. If the target vhost already carries certbot-managed TLS
+(`ssl_certificate`/`listen 443 ssl`), it is preserved and the command says so instead of overwriting
+it, because the template would drop the TLS block. Pass `--force` to rewrite it; a timestamped backup
+of the old vhost is written first.
 
 The vhost is rendered to `$RELABEL_NGINX_DIR/<domain>.conf` (default `/etc/nginx/sites-available`)
 and linked into `$RELABEL_NGINX_ENABLED_DIR` (default `/etc/nginx/sites-enabled`). Cloudflare DNS is
@@ -189,9 +199,9 @@ the detected public IPv4. Nothing is deleted.
   offering a rebranded instance to third parties.
 - It does not decide what "correct" means. `verify` reports what it measured; the seven checks are
   the contract.
-- It does not guess per-app knowledge. `scan` is generic; recipes are validated records, not
-  executable hooks, and v0.1.0 does not consume them automatically. If a surface needs an exact rule,
-  handle it in the brand spec or a follow-up patch rather than expecting magic.
+- It does not guess per-app knowledge. `scan` is generic, recipes are validated data (no executable
+  hooks), and `apply` only uses a recipe's `renames` and `files:` opt-ins. If a surface needs an exact
+  rule, handle it in the brand spec or a follow-up patch rather than expecting magic.
 - It does not touch the system unless asked: `deploy` requires `--dry-run` or `--apply`, and
   `apply --dry-run` performs no writes.
 
@@ -212,7 +222,8 @@ the detected public IPv4. Nothing is deleted.
 2. Tests live in `test/` (`node --test test/`); fixtures live in `test/fixtures/`.
 3. Recipes are data only: model a new one on `recipes/uptime-kuma/recipe.yaml`, then run
    `relabeld recipe show <id>` to validate it.
-4. Keep public docs matching the implemented CLI. If a command is still a stub, mark it planned.
+4. Keep public docs matching the implemented CLI. Mark anything not implemented as planned instead
+   of documenting imagined behaviour.
 
 ## License
 

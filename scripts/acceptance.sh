@@ -12,7 +12,7 @@ tail -3 /tmp/relabel-build.log
 
 step "tests"
 node --test "test/**/*.test.ts" >/tmp/relabel-test.log 2>&1; check $? "node --test test/"
-grep -E "^# (pass|fail|tests)" /tmp/relabel-test.log | tail -3
+grep -E "^ℹ (tests|pass|fail)" /tmp/relabel-test.log | tail -3
 
 step "cli version/help"
 node dist/cli.js --version >/dev/null 2>&1; check $? "relabeld --version"

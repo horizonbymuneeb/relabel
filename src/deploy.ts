@@ -21,7 +21,7 @@ const USAGE = [
   "",
   "Usage:",
   "  relabeld deploy [dir] --brand <brand.yaml> --dry-run [--port N]",
-  "  relabeld deploy [dir] --brand <brand.yaml> --apply  [--port N] [--certbot]",
+  "  relabeld deploy [dir] --brand <brand.yaml> --apply  [--port N] [--force] [--certbot]",
   "",
   "Mode (exactly one is required):",
   "  --dry-run        render and print the vhost + commands; writes and executes nothing",
@@ -30,6 +30,7 @@ const USAGE = [
   "Options:",
   "  --brand <file>   brand spec with a `domain` (default: brand.yaml in cwd or [dir])",
   "  --port <n>       upstream port on 127.0.0.1 (default: 3000)",
+  "  --force          with --apply, rewrite even a certbot-managed TLS vhost (backup is written first)",
   "  --certbot        with --apply, also run the printed certbot command (issues TLS)",
   "  -h, --help       show this help",
   "",
@@ -53,6 +54,7 @@ export interface DeployArgs {
   dryRun: boolean;
   apply: boolean;
   port: number;
+  force: boolean;
   certbot: boolean;
   help: boolean;
 }
@@ -96,7 +98,16 @@ export interface DeployResult {
   dir: string;
   brand: { path: string; name: string; domain: string };
   port: number;
-  nginx: { path: string; enabledPath: string; content: string; changed: boolean };
+  nginx: {
+    path: string;
+    enabledPath: string;
+    content: string;
+    changed: boolean;
+    /** Timestamped backup written before an overwrite (absent when untouched). */
+    backup?: string;
+    /** True when an existing certbot-managed TLS vhost was left untouched. */
+    preserved?: boolean;
+  };
   certbot: { command: string; executed: boolean; status: StepStatus };
   dns: {
     status: "skipped" | "planned" | "created" | "exists" | "conflict" | "failed";
@@ -126,6 +137,7 @@ export function parseDeployArgs(argv: string[]): ParseResult {
         "dry-run": { type: "boolean", default: false },
         apply: { type: "boolean", default: false },
         port: { type: "string" },
+        force: { type: "boolean", default: false },
         certbot: { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
       },
@@ -139,6 +151,7 @@ export function parseDeployArgs(argv: string[]): ParseResult {
     "dry-run"?: boolean;
     apply?: boolean;
     port?: string;
+    force?: boolean;
     certbot?: boolean;
     help?: boolean;
   };
@@ -147,7 +160,7 @@ export function parseDeployArgs(argv: string[]): ParseResult {
   if (values.help) {
     return {
       ok: true,
-      args: { dir: positionals[0] ?? ".", brand: values.brand, dryRun: false, apply: false, port: DEFAULT_PORT, certbot: false, help: true },
+      args: { dir: positionals[0] ?? ".", brand: values.brand, dryRun: false, apply: false, port: DEFAULT_PORT, force: false, certbot: false, help: true },
     };
   }
   if (positionals.length > 1) {
@@ -176,10 +189,53 @@ export function parseDeployArgs(argv: string[]): ParseResult {
       dryRun,
       apply,
       port,
+      force: Boolean(values.force),
       certbot: Boolean(values.certbot),
       help: false,
     },
   };
+}
+
+/** True when a value contains control characters or line breaks (nginx/shell injection risk). */
+export function hasControlChars(value: string): boolean {
+  return /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value);
+}
+
+/**
+ * Collapse a free-form string into a single-line, comment-safe fragment.
+ * Used for the brand name in the generated nginx comment: brand.yaml is
+ * untrusted input, so a literal newline must never be able to start a new
+ * nginx directive line.
+ */
+export function sanitizeNginxComment(value: string): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+}
+
+/** Bare hostname (no scheme/port/path) — the only shape allowed in server_name. */
+export function isBareHostname(value: string): boolean {
+  return /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(\.(?!-)[a-z0-9-]{1,63})+$/i.test(value);
+}
+
+/**
+ * Detect a certbot/letsencrypt-managed vhost: rewriting it would destroy the
+ * TLS block certbot injected (ssl_certificate and a 443 ssl listener).
+ * Commented placeholder lines (our own template) do not count.
+ */
+export function isCertbotManagedVhost(content: string): boolean {
+  return (
+    /^[ \t]*ssl_certificate[ \t]/m.test(content) ||
+    /^[ \t]*listen[ \t][^;\n]*\b443\b[^;\n]*\bssl\b/m.test(content)
+  );
+}
+
+/** Timestamped, filesystem-safe backup path for a vhost before overwrite. */
+export function timestampedBackupPath(configPath: string, now: Date = new Date()): string {
+  const stamp = now.toISOString().replace(/[:.]/g, "-");
+  return `${configPath}.bak.${stamp}`;
 }
 
 /** Validate the parts of a brand spec that deploy needs. Pure. */
@@ -194,15 +250,26 @@ export function parseBrandSpec(
   if (typeof spec.name !== "string" || spec.name.trim() === "") {
     return { ok: false, error: `${file}: missing required field \`name\`` };
   }
+  const name = spec.name.trim();
+  if (hasControlChars(name)) {
+    return { ok: false, error: `${file}: \`name\` must be a single line without control characters (nginx comment injection)` };
+  }
   if (typeof spec.domain !== "string" || spec.domain.trim() === "") {
     return { ok: false, error: `${file}: missing required field \`domain\` (needed for server_name)` };
   }
-  const domain = spec.domain.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  if (!/^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(\.(?!-)[a-z0-9-]{1,63})+$/i.test(domain)) {
+  const domainRaw = spec.domain.trim();
+  if (hasControlChars(domainRaw)) {
+    return { ok: false, error: `${file}: \`domain\` must not contain control characters or line breaks` };
+  }
+  const domain = domainRaw.toLowerCase().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  if (!isBareHostname(domain)) {
     return { ok: false, error: `${file}: \`domain: ${spec.domain}\` is not a bare hostname (expected e.g. status.example.com)` };
   }
   const emailFrom = typeof spec.emailFrom === "string" ? spec.emailFrom : undefined;
-  return { ok: true, brand: { name: spec.name.trim(), domain, emailFrom } };
+  if (emailFrom !== undefined && hasControlChars(emailFrom)) {
+    return { ok: false, error: `${file}: \`emailFrom\` must not contain control characters or line breaks` };
+  }
+  return { ok: true, brand: { name, domain, emailFrom } };
 }
 
 export function nginxConfigPath(domain: string, dir: string = DEFAULT_NGINX_DIR): string {
@@ -216,10 +283,23 @@ export function nginxEnabledPath(domain: string, dir: string = DEFAULT_NGINX_ENA
 /** Render a deterministic nginx vhost. Same input -> byte-identical output. */
 export function renderVhost(opts: VhostOptions): string {
   const port = opts.port ?? DEFAULT_PORT;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`renderVhost: invalid port ${JSON.stringify(opts.port)}`);
+  }
   const host = opts.upstreamHost ?? DEFAULT_UPSTREAM_HOST;
+  if (hasControlChars(host) || !/^[A-Za-z0-9.:[\]-]+$/.test(host)) {
+    throw new Error(`renderVhost: invalid upstream host ${JSON.stringify(opts.upstreamHost)}`);
+  }
   const logs = opts.logDir ?? DEFAULT_LOG_DIR;
+  if (hasControlChars(logs)) {
+    throw new Error(`renderVhost: invalid log dir ${JSON.stringify(opts.logDir)}`);
+  }
   const domain = opts.domain;
-  const brand = opts.brandName ? ` (${opts.brandName})` : "";
+  if (hasControlChars(domain) || !isBareHostname(domain)) {
+    throw new Error(`renderVhost: invalid domain ${JSON.stringify(opts.domain)}`);
+  }
+  const safeBrand = opts.brandName ? sanitizeNginxComment(opts.brandName) : "";
+  const brand = safeBrand ? ` (${safeBrand})` : "";
   const slug = slugify(domain) || "site";
   return [
     `# relabeld — nginx vhost for ${domain}${brand}`,
@@ -263,12 +343,21 @@ export function renderVhost(opts: VhostOptions): string {
   ].join("\n");
 }
 
+const CERTBOT_EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+
+/** Extract a certbot-safe email; anything with shell metacharacters is dropped. */
 export function certbotEmail(emailFrom?: string): string | undefined {
-  if (!emailFrom) return undefined;
-  const angled = emailFrom.match(/<([^>]+)>/);
-  if (angled && angled[1].includes("@")) return angled[1].trim();
-  const bare = emailFrom.match(/[^\s,;<>]+@[^\s,;<>]+/);
-  return bare ? bare[0] : undefined;
+  if (!emailFrom || hasControlChars(emailFrom)) return undefined;
+  let candidate: string | undefined;
+  const angled = emailFrom.match(/<([^<>]+)>/);
+  if (angled && angled[1].includes("@")) {
+    candidate = angled[1].trim();
+  } else {
+    const bare = emailFrom.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]*[A-Za-z0-9]\.[A-Za-z]{2,}/);
+    candidate = bare ? bare[0] : undefined;
+  }
+  if (!candidate || !CERTBOT_EMAIL_RE.test(candidate)) return undefined;
+  return candidate;
 }
 
 /** The exact certbot command a human should run after `--apply`. Pure. */
@@ -345,6 +434,8 @@ export async function detectPublicIp(timeoutMs = 3000): Promise<string | null> {
 interface NginxApplyOutcome {
   steps: DeployStep[];
   changed: boolean;
+  backup?: string;
+  preserved?: boolean;
   error?: string;
 }
 
@@ -355,9 +446,12 @@ async function applyNginx(opts: {
   configDir: string;
   enabledDir: string;
   runChecks: boolean;
+  force: boolean;
 }): Promise<NginxApplyOutcome> {
   const steps: DeployStep[] = [];
   let changed = false;
+  let backup: string | undefined;
+  let preserved = false;
   try {
     await mkdir(opts.configDir, { recursive: true });
     let existing: string | null = null;
@@ -370,13 +464,32 @@ async function applyNginx(opts: {
     }
     if (existing === opts.content) {
       steps.push({ id: "nginx:vhost", status: "unchanged", detail: `${opts.configPath} already up to date` });
+    } else if (existing !== null && isCertbotManagedVhost(existing) && !opts.force) {
+      // certbot injected the TLS block into this file; overwriting the
+      // template would delete it. Preserve and require an explicit --force.
+      preserved = true;
+      steps.push({
+        id: "nginx:vhost",
+        status: "skipped",
+        detail: `${opts.configPath} has certbot-managed TLS (ssl_certificate / listen 443 ssl); preserved — use --force to rewrite (a timestamped backup is written first)`,
+      });
     } else {
+      if (existing !== null) {
+        // Destructive write: keep a timestamped copy of the previous vhost.
+        const base = timestampedBackupPath(opts.configPath);
+        let candidate = base;
+        let suffix = 1;
+        while (existsSync(candidate)) candidate = `${base}-${suffix++}`;
+        await writeFile(candidate, existing, "utf8");
+        backup = candidate;
+        steps.push({ id: "nginx:backup", status: "done", detail: `backed up ${opts.configPath} -> ${candidate}` });
+      }
       await writeFile(opts.configPath, opts.content, "utf8");
       changed = true;
       steps.push({
         id: "nginx:vhost",
         status: "done",
-        detail: `${existing === null ? "created" : "updated"} ${opts.configPath}`,
+        detail: `${existing === null ? "created" : "updated"} ${opts.configPath}${backup ? ` (backup: ${backup})` : ""}`,
       });
     }
   } catch (err) {
@@ -387,6 +500,8 @@ async function applyNginx(opts: {
         { id: "nginx:vhost", status: "failed", detail: `cannot write ${opts.configPath}: ${e.message}` },
       ],
       changed,
+      backup,
+      preserved,
       error: `cannot write ${opts.configPath}: ${e.message} — re-run with sudo or set RELABEL_NGINX_DIR`,
     };
   }
@@ -430,12 +545,18 @@ async function applyNginx(opts: {
   }
 
   if (!changed) {
-    steps.push({ id: "nginx:reload", status: "unchanged", detail: "config already current; reload not needed" });
-    return { steps, changed };
+    steps.push({
+      id: "nginx:reload",
+      status: "unchanged",
+      detail: preserved
+        ? "existing certbot-managed vhost preserved; no reload needed"
+        : "config already current; reload not needed",
+    });
+    return { steps, changed, backup, preserved };
   }
   if (!opts.runChecks) {
     steps.push({ id: "nginx:reload", status: "skipped", detail: "custom nginx directory; skipped nginx -t / systemctl reload" });
-    return { steps, changed };
+    return { steps, changed, backup, preserved };
   }
   const test = await exec("nginx", ["-t"]);
   if (test.missing) {
@@ -466,7 +587,7 @@ async function applyNginx(opts: {
   } else {
     steps.push({ id: "nginx:reload", status: "done", detail: "systemctl reload nginx" });
   }
-  return { steps, changed };
+  return { steps, changed, backup, preserved };
 }
 
 interface DnsOutcome {
@@ -571,6 +692,12 @@ function humanReport(result: DeployResult, ctx: Ctx): void {
   ctx.log(`app dir: ${result.dir}`);
   ctx.log(`upstream: http://${DEFAULT_UPSTREAM_HOST}:${result.port}`);
   ctx.log(`nginx: ${result.nginx.path}${result.nginx.changed ? " (will change)" : " (up to date)"}`);
+  if (result.nginx.preserved) {
+    ctx.log("nginx: PRESERVED certbot-managed TLS vhost (ssl_certificate/listen 443 ssl); use --force to rewrite");
+  }
+  if (result.nginx.backup) {
+    ctx.log(`nginx: backup written to ${result.nginx.backup}`);
+  }
   ctx.log("");
   ctx.log(`--- ${result.nginx.path} ---`);
   ctx.log(result.nginx.content.replace(/\n$/, ""));
@@ -700,7 +827,11 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
 
   if (args.dryRun) {
     result.nginx.changed = true;
-    steps.push({ id: "nginx:vhost", status: "planned", detail: `would write ${configPath}` });
+    steps.push({
+      id: "nginx:vhost",
+      status: "planned",
+      detail: `would write ${configPath}${args.force ? " (--force: certbot-managed TLS will be backed up and rewritten)" : ""}`,
+    });
     steps.push({ id: "nginx:enable", status: "planned", detail: `would link ${enabledPath} -> ${configPath}` });
     steps.push({ id: "nginx:reload", status: "planned", detail: "would run nginx -t && systemctl reload nginx" });
     steps.push({ id: "certbot", status: args.certbot ? "planned" : "skipped", detail: certbotCommand });
@@ -719,8 +850,16 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     configDir,
     enabledDir,
     runChecks: configDir === DEFAULT_NGINX_DIR || enabledDir === DEFAULT_NGINX_ENABLED_DIR,
+    force: args.force,
   });
   result.nginx.changed = nginx.changed;
+  if (nginx.backup) result.nginx.backup = nginx.backup;
+  if (nginx.preserved) {
+    result.nginx.preserved = true;
+    notes.push(
+      "certbot-managed TLS vhost preserved; re-run with --force to rewrite it (a timestamped backup is written first)",
+    );
+  }
   steps.push(...nginx.steps);
   if (nginx.error) {
     result.ok = false;

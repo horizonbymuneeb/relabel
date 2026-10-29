@@ -93,6 +93,7 @@ interface AssetOp {
 
 interface ComposeOp {
   file: string;
+  base: string;
   service: string;
   newService: string;
   written: boolean;
@@ -469,26 +470,35 @@ export function isDockerImageLine(rel: string, line: string): boolean {
   return false;
 }
 
-async function runRenames(
+/* ------------------------------------------------------------------ */
+/* renames (plan first, commit after the ref guard passes)            */
+/* ------------------------------------------------------------------ */
+
+interface RenamePlan {
+  ops: RenameOp[];
+  moves: Array<{ fromAbs: string; toAbs: string }>;
+}
+
+async function planRenames(
   recipe: ApplyRecipe | null,
   brand: BrandSpec,
   root: string,
   dryRun: boolean,
   warnings: string[],
-): Promise<RenameOp[]> {
-  const ops: RenameOp[] = [];
-  if (!recipe) return ops;
+): Promise<RenamePlan> {
+  const plan: RenamePlan = { ops: [], moves: [] };
+  if (!recipe) return plan;
   for (const op of recipe.renames) {
     const renderedTo = renderBrandTemplate(op.to, brand);
     const fromRel = safeRelPath(op.from);
     const toRel = safeRelPath(renderedTo);
     if (!fromRel || !toRel) {
       warnings.push(`recipe rename outside the repo (skipped): ${op.from} -> ${renderedTo}`);
-      ops.push({ from: op.from, to: renderedTo, status: "skipped", written: false });
+      plan.ops.push({ from: op.from, to: renderedTo, status: "skipped", written: false });
       continue;
     }
     if (fromRel === toRel) {
-      ops.push({ from: fromRel, to: toRel, status: "skipped", written: false });
+      plan.ops.push({ from: fromRel, to: toRel, status: "skipped", written: false });
       continue;
     }
     const fromAbs = path.resolve(root, fromRel);
@@ -496,23 +506,112 @@ async function runRenames(
     const fromExists = exists(fromAbs);
     const toExists = exists(toAbs);
     if (fromExists && !toExists) {
-      if (!dryRun) {
-        await mkdir(path.dirname(toAbs), { recursive: true });
-        await rename(fromAbs, toAbs);
-      }
-      ops.push({ from: fromRel, to: toRel, status: dryRun ? "would-rename" : "renamed", written: !dryRun });
+      plan.ops.push({ from: fromRel, to: toRel, status: dryRun ? "would-rename" : "renamed", written: false });
+      plan.moves.push({ fromAbs, toAbs });
     } else if (!fromExists && toExists) {
-      ops.push({ from: fromRel, to: toRel, status: "already", written: false });
+      plan.ops.push({ from: fromRel, to: toRel, status: "already", written: false });
     } else if (!fromExists && !toExists) {
       warnings.push(`rename source missing: ${fromRel} (skipped; not present in this app version)`);
-      ops.push({ from: fromRel, to: toRel, status: "missing", written: false });
+      plan.ops.push({ from: fromRel, to: toRel, status: "missing", written: false });
     } else {
       warnings.push(`rename target already exists: ${toRel} (skipped; source kept)`);
-      ops.push({ from: fromRel, to: toRel, status: "conflict", written: false });
+      plan.ops.push({ from: fromRel, to: toRel, status: "conflict", written: false });
     }
   }
-  return ops;
+  return plan;
 }
+
+/** Perform the planned renames (never called for --dry-run or a failed ref guard). */
+async function commitRenames(plan: RenamePlan): Promise<void> {
+  for (const move of plan.moves) {
+    await mkdir(path.dirname(move.toAbs), { recursive: true });
+    await rename(move.fromAbs, move.toAbs);
+  }
+  for (const op of plan.ops) if (op.status === "renamed") op.written = true;
+}
+
+/* ------------------------------------------------------------------ */
+/* B4 ref guard: rewritten relative module specifiers must resolve    */
+/* ------------------------------------------------------------------ */
+
+const MODULE_CODE_RE = /\.(js|cjs|mjs|jsx|ts|tsx|vue|svelte|astro)$/i;
+const SPECIFIER_PATTERNS: RegExp[] = [
+  /\brequire\(\s*["'](\.[^"'\n]+)["']\s*\)/g,
+  /\bfrom\s*["'](\.[^"'\n]+)["']/g,
+  /\bimport\s*\(\s*["'](\.[^"'\n]+)["']\s*\)/g,
+  /\bimport\s+["'](\.[^"'\n]+)["']/g,
+];
+const RESOLVE_SUFFIXES = ["", ".js", ".cjs", ".mjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte", ".json"];
+const RESOLVE_INDEXES = [
+  "index.js", "index.cjs", "index.mjs", "index.ts", "index.tsx", "index.vue", "index.svelte", "index.json",
+];
+
+function stripSpecifierSuffix(specifier: string): string {
+  return specifier.replace(/[?#].*$/, "");
+}
+
+/** Extract deduped relative module specifiers from source text. */
+export function extractRelativeSpecifiers(text: string): string[] {
+  const found = new Set<string>();
+  for (const pattern of SPECIFIER_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const specifier = stripSpecifierSuffix(match[1]);
+      if (specifier.startsWith(".")) found.add(specifier);
+    }
+  }
+  return [...found];
+}
+
+function resolveSpecifier(
+  baseFileAbs: string,
+  specifier: string,
+  existsFn: (candidate: string) => boolean,
+): string | null {
+  const target = path.resolve(path.dirname(baseFileAbs), stripSpecifierSuffix(specifier));
+  for (const suffix of RESOLVE_SUFFIXES) {
+    const candidate = path.normalize(target + suffix);
+    if (existsFn(candidate)) return candidate;
+  }
+  for (const index of RESOLVE_INDEXES) {
+    const candidate = path.normalize(path.join(target, index));
+    if (existsFn(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Map a path into its post-rename location (directories handled via prefix). */
+function makeVirtualFs(plan: RenamePlan): {
+  virtualPath: (abs: string) => string;
+  existsVirtual: (abs: string) => boolean;
+} {
+  const virtualPath = (abs: string): string => {
+    const normalized = path.normalize(abs);
+    for (const move of plan.moves) {
+      const from = path.normalize(move.fromAbs);
+      if (normalized === from) return path.normalize(move.toAbs);
+      if (normalized.startsWith(from + path.sep)) {
+        return path.normalize(move.toAbs + normalized.slice(from.length));
+      }
+    }
+    return normalized;
+  };
+  const existsVirtual = (abs: string): boolean => {
+    const normalized = path.normalize(abs);
+    for (const move of plan.moves) {
+      const from = path.normalize(move.fromAbs);
+      if (normalized === from || normalized.startsWith(from + path.sep)) return false;
+    }
+    for (const move of plan.moves) {
+      const to = path.normalize(move.toAbs);
+      if (normalized === to || normalized.startsWith(to + path.sep)) return true;
+    }
+    return exists(normalized);
+  };
+  return { virtualPath, existsVirtual };
+}
+
 
 /* ------------------------------------------------------------------ */
 /* compose overlay                                                    */
@@ -608,13 +707,18 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   const rules = buildRules(brand.variants, brand.name);
   const files = await walkRepo(root);
 
+  // Plan renames up-front (no writes): the ref guard needs the post-rename map.
+  const renamePlan = await planRenames(recipe, brand, root, dryRun, warnings);
+  const { virtualPath, existsVirtual } = makeVirtualFs(renamePlan);
+  const renameSources = new Set(renamePlan.moves.map((move) => path.normalize(move.fromAbs)));
+
   // Compose plan is derived from the pristine compose file before text patches.
   const composeFile = pickCompose(files);
   let composeOp: ComposeOp | null = null;
   let overlayPath: string | null = null;
   let overlayContents: string | null = null;
+  const composeRel = composeFile ? relPosix(root, composeFile) : GENERATED_COMPOSE;
   if (composeFile) {
-    const composeRel = relPosix(root, composeFile);
     const rawCompose = await readTextIfSmall(composeFile, 512 * 1024);
     let services: Record<string, unknown> = {};
     if (rawCompose) {
@@ -645,13 +749,15 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
         `# Run: docker compose -f ${composeRel} -f ${GENERATED_COMPOSE} up -d\n` +
         YAML.stringify(overlay);
       overlayPath = path.join(root, GENERATED_COMPOSE);
-      composeOp = { file: GENERATED_COMPOSE, service, newService, written: !dryRun };
+      composeOp = { file: GENERATED_COMPOSE, base: composeRel, service, newService, written: false };
     }
   }
 
   const changed: Change[] = [];
   const skipped: Skip[] = [];
   const skipFiles = new Set([brandRel, GENERATED_COMPOSE]);
+  const pending: Array<{ fileAbs: string; rel: string; content: string }> = [];
+  const refCandidates: Array<{ fileAbs: string; specifier: string }> = [];
 
   for (const file of files) {
     const rel = relPosix(root, file);
@@ -702,9 +808,30 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
       replacements += result.count;
       return result.text;
     });
+    const outContent = outLines.join("\n");
+    const isCode = MODULE_CODE_RE.test(rel);
+    const oldSpecifiers = isCode ? extractRelativeSpecifiers(text) : [];
     if (replacements > 0) {
       changed.push({ file: rel, replacements });
-      if (!dryRun) await writeFile(file, outLines.join("\n"), "utf8");
+      pending.push({ fileAbs: file, rel, content: outContent });
+    }
+    if (isCode) {
+      const newSpecifiers = replacements > 0 ? extractRelativeSpecifiers(outContent) : oldSpecifiers;
+      const oldSet = new Set(oldSpecifiers);
+      // (a) specifiers rewritten by this apply must point at a real file
+      for (const specifier of newSpecifiers) {
+        if (replacements > 0 && !oldSet.has(specifier)) {
+          refCandidates.push({ fileAbs: file, specifier });
+        }
+      }
+      // (b) untouched specifiers pointing at a file a recipe renames would break
+      for (const specifier of oldSpecifiers) {
+        if (!newSpecifiers.includes(specifier)) continue;
+        const resolved = resolveSpecifier(file, specifier, exists);
+        if (resolved && renameSources.has(path.normalize(resolved))) {
+          refCandidates.push({ fileAbs: file, specifier });
+        }
+      }
     }
     if (licenseLines > 0) {
       skipped.push({ file: rel, reason: "copyright/license line preserved", lines: licenseLines });
@@ -717,9 +844,37 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     }
   }
 
-  // Recipe renames run AFTER the text patch so rewritten refs point at the
-  // file's new name, and idempotently (already-renamed -> status "already").
-  const renames = await runRenames(recipe, brand, root, dryRun, warnings);
+  // B4: refuse to write a tree whose rewritten module refs would not resolve.
+  const danglingRefs: Array<{ file: string; specifier: string }> = [];
+  const seenRefs = new Set<string>();
+  for (const candidate of refCandidates) {
+    const baseFile = virtualPath(candidate.fileAbs);
+    const resolved = resolveSpecifier(baseFile, candidate.specifier, existsVirtual);
+    if (resolved) continue;
+    const displayRel = toPosix(path.relative(root, baseFile)) || path.basename(baseFile);
+    const key = `${displayRel}|${candidate.specifier}`;
+    if (seenRefs.has(key)) continue;
+    seenRefs.add(key);
+    danglingRefs.push({ file: displayRel, specifier: candidate.specifier });
+  }
+  danglingRefs.sort((a, b) => a.file.localeCompare(b.file) || a.specifier.localeCompare(b.specifier));
+  if (danglingRefs.length > 0) {
+    ctx.error(
+      `apply: refusing to write — ${danglingRefs.length} relative module ref(s) would not resolve after rebrand:`,
+    );
+    for (const entry of danglingRefs.slice(0, 50)) ctx.error(`  ${entry.file}:${entry.specifier}`);
+    if (danglingRefs.length > 50) ctx.error(`  … ${danglingRefs.length - 50} more`);
+    ctx.error(
+      "apply: nothing was written. Add the matching `renames` entry to the recipe (or fix the reference), then re-run.",
+    );
+    return 1;
+  }
+
+  // Guard passed: apply the pending text patches, then move the renamed files.
+  if (!dryRun) {
+    for (const entry of pending) await writeFile(entry.fileAbs, entry.content, "utf8");
+    await commitRenames(renamePlan);
+  }
 
   // Assets: copy brand logo/favicon over every detected target of that kind.
   const assetHits = await scanAssets(root, files);
@@ -772,7 +927,9 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   }
 
   const totalReplacements = changed.reduce((sum, entry) => sum + entry.replacements, 0);
-  const renamesPerformed = renames.filter((op) => op.status === "renamed" || op.status === "would-rename").length;
+  const renamesPerformed = renamePlan.ops.filter(
+    (op) => op.status === "renamed" || op.status === "would-rename",
+  ).length;
   const duplicateSkips = new Map<string, Skip>();
   for (const skip of skipped) {
     const key = `${skip.file}|${skip.reason}`;
@@ -781,6 +938,9 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   const skipList = [...duplicateSkips.values()];
   const recipeInfo = recipe
     ? { id: recipe.id, name: recipe.name, source: toPosix(recipe.source), auto: recipe.auto }
+    : null;
+  const composeCommand = composeOp
+    ? `docker compose -f ${composeOp.base} -f ${GENERATED_COMPOSE} up -d`
     : null;
 
   if (ctx.json) {
@@ -792,7 +952,7 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
           recipe: recipeInfo,
           changed,
           skipped: skipList,
-          renames,
+          renames: renamePlan.ops,
           assets: assetOps,
           compose: composeOp,
           warnings,
@@ -826,12 +986,12 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
       ctx.log(`  ${entry.file.padEnd(42)} ${entry.replacements}`);
     }
   }
-  if (renames.length) {
+  if (renamePlan.ops.length) {
     ctx.log("");
     ctx.log(`renames ${dryRun ? "planned" : "performed"} ${renamesPerformed}:`);
-    for (const op of renames) {
-      const arrow = op.status === "already" ? "already" : op.status;
-      ctx.log(`  ${op.from.padEnd(46)} → ${op.to.padEnd(46)} ${arrow}`);
+    for (const op of renamePlan.ops) {
+      const state = op.status === "already" ? "already" : op.status;
+      ctx.log(`  ${op.from.padEnd(46)} → ${op.to.padEnd(46)} ${state}`);
     }
   }
   if (skipList.length) {
@@ -849,11 +1009,12 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
       ctx.log(`  ${op.kind.padEnd(8)} ${op.file.padEnd(36)} ← ${op.from} (${op.bytes} B)`);
     }
   }
-  if (composeOp) {
+  if (composeOp && composeCommand) {
     ctx.log("");
     ctx.log(
       `compose ${dryRun ? "would write" : "wrote"}: ${composeOp.file} (service ${composeOp.service} → ${composeOp.newService})`,
     );
+    ctx.log(`${dryRun ? "would run" : "run"}: ${composeCommand}`);
   }
   if (warnings.length) {
     ctx.log("");
@@ -862,6 +1023,5 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   }
   ctx.log("");
   ctx.log(dryRun ? "next: relabeld apply --brand brand.yaml" : "next: relabeld verify --url http://localhost:<port>");
-  if (composeWritten) ctx.log(`      docker compose -f ${composeOp?.file ?? GENERATED_COMPOSE} up -d`);
   return 0;
 }

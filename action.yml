@@ -15,9 +15,9 @@ inputs:
     required: false
     default: "brand.yaml"
   version:
-    description: "Version of the relabeld npm package to run (default: latest)."
+    description: "Pinned relabeld npm version to run (default: 1.0.0). Bump deliberately; do not track latest in a release gate."
     required: false
-    default: "latest"
+    default: "1.0.0"
   cdp:
     description: "Optional Chrome DevTools Protocol endpoint to reuse instead of launching Chromium."
     required: false
@@ -25,7 +25,7 @@ inputs:
     description: "Optional output path for the self-contained HTML report (uploaded as an artifact)."
     required: false
   fail-on:
-    description: "Comma-separated check groups that should fail the gate (brand, console, overflow, favicon, screenshot)."
+    description: "Comma-separated check groups that fail the gate: brand, console, overflow, screenshot(s), favicon."
     required: false
     default: "brand,console,overflow"
 
@@ -103,13 +103,18 @@ runs:
         }
         const checks = Array.isArray(result.checks) ? result.checks : [];
         const failed = checks.filter((c) => c.status === "fail").map((c) => c.id);
+        // Normalize singular/plural so "screenshot" and "screenshots" both work,
+        // and match check ids by exact name, prefix (brand -> brand-title) or head.
+        const normalize = (value) => value.toLowerCase().replace(/s$/, "");
         const groups = String(failOn || "")
           .split(",")
-          .map((s) => s.trim())
+          .map((s) => normalize(s.trim()))
           .filter(Boolean);
-        const hits = failed.filter((id) =>
-          groups.some((g) => id === g || id.startsWith(`${g}-`) || id.split("-")[0] === g),
-        );
+        const hits = failed.filter((id) => {
+          const norm = normalize(id);
+          const head = norm.split("-")[0];
+          return groups.some((g) => norm === g || norm.startsWith(`${g}-`) || head === g);
+        });
         const summary = result.summary || {};
         console.log(
           `relabel verify: passed=${summary.passed ?? "?"} failed=${summary.failed ?? failed.length} skipped=${summary.skipped ?? "?"} (exit ${verifyCode || 0})`,
