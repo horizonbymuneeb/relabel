@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/relabeld?color=2563EB)](https://www.npmjs.com/package/relabeld)
 [![license](https://img.shields.io/badge/license-MIT-2563EB)](LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D20-2563EB)](package.json)
-[![docker](https://img.shields.io/badge/docker-ghcr.io-2563EB)](Dockerfile)
+[![docker](https://img.shields.io/badge/docker-Dockerfile-2563EB)](Dockerfile)
 
 White-label a self-hosted app from one `brand.yaml`, then prove the result in a headless browser.
 
@@ -70,7 +70,8 @@ relabeld --version
 
 The published package (27 files, ~82 kB packed) contains the compiled CLI (`dist/`), the recipe
 library (`recipes/`), the bundled agent skill (`skills/`), reference docs (`docs/`), `README.md`
-and `LICENSE`. Run it from the package, from a container, or through the bundled Dockerfile.
+and `LICENSE`. Run it from the package, from a container, or through the bundled Dockerfile
+(`docker build -t relabeld . && docker run --rm relabeld --version`; no prebuilt registry image is published yet).
 
 From source (this repository):
 

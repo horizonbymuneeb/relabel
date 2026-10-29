@@ -2,6 +2,10 @@
 
 All notable changes to `relabeld`. Built in versioned milestones.
 
+## 1.0.3 — docs accuracy
+
+- README docker badge no longer implies a published registry image; local Dockerfile build documented.
+
 ## 1.0.2 — docs and packaging polish
 
 - README: npm package name, package URL, `npx relabeld` quick path, package contents, npm/license/node/docker badges.
