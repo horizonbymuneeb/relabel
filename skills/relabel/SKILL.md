@@ -56,8 +56,9 @@ relabeld mcp                               # MCP stdio server, 5 tools
 relabeld skill install --agent all
 ```
 
-Global flags: `--json` (exactly one JSON object on stdout), `--cwd <dir>`. Exit codes: `0` ok,
-`1` verification failure, `2` usage error.
+Global flags: `--json` (exactly one JSON object on stdout), `--cwd <dir>`. Exit codes: `0` ok
+(or no failed checks), `1` check/command failure (verify failures, refused writes, deploy errors),
+`2` usage error.
 
 ## Procedure
 

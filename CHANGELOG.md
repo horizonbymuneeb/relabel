@@ -20,7 +20,8 @@ first-class agent integration.
 - `report` — self-contained HTML report (inline CSS, base64 screenshots, light/dark).
 - `recipe` — list / show / add; validated YAML recipes.
 - `deploy` — render nginx vhost + optional Cloudflare DNS create + certbot command;
-  `--dry-run` default, `--apply` opt-in, idempotent.
+  exactly one explicit mode is required (`--dry-run` or `--apply`); certbot-managed TLS
+  vhosts are preserved unless `--force`, every overwrite writes a timestamped backup.
 - `doctor` — environment readiness check.
 - `mcp` — MCP stdio server exposing `relabel_scan`, `relabel_init`, `relabel_apply`,
   `relabel_verify`, `relabel_report`.

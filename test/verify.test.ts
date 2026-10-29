@@ -11,6 +11,7 @@ import {
   decodeDataUri,
   evaluateOverflow,
   formatChecks,
+  isAttributionLine,
   isImplicitFaviconNoise,
   parseIconLinkHref,
   run,
@@ -638,4 +639,120 @@ test("bundled SKILL.md frontmatter advertises version 1.0.0", async () => {
   assert.match(text, /^---\nname: relabel\n/);
   assert.match(text, /^version: 1\.0\.0$/m);
   assert.match(text, /^description: .+\.$/m);
+});
+
+test("brand-strings ignores an old brand that appears only in a preserved © line", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-verify-copyright-"));
+  const fixture = await startFixture({
+    page: plainPage("", "<footer><p>© 2024 Pulse Status. All rights reserved.</p></footer>"),
+  });
+  try {
+    const result = await verifyPage({
+      url: fixture.url,
+      brand: { name: "Nova Status", variants: ["Pulse Status"], palette: { primary: "#000" } },
+      brandDir: dir,
+      shotsDir: path.join(dir, "shots"),
+    });
+    const check = result.checks.find((c) => c.id === "brand-strings");
+    assert.ok(check);
+    assert.equal(check.status, "pass", check.detail);
+    assert.match(check.detail, /ignored 1 preserved license\/copyright/);
+    assert.equal(result.summary.failed, 0);
+  } finally {
+    await fixture.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("brand-strings still fails when the old brand is visible beside a © line", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-verify-copyright-visible-"));
+  const fixture = await startFixture({
+    page: plainPage(
+      "",
+      "<h1>Pulse Status</h1><footer><p>© 2024 Pulse Status. All rights reserved.</p></footer>",
+    ),
+  });
+  try {
+    const result = await verifyPage({
+      url: fixture.url,
+      brand: { name: "Nova Status", variants: ["Pulse Status"], palette: { primary: "#000" } },
+      brandDir: dir,
+      shotsDir: path.join(dir, "shots"),
+    });
+    const check = result.checks.find((c) => c.id === "brand-strings");
+    assert.ok(check);
+    assert.equal(check.status, "fail");
+    assert.match(check.detail, /1 visible occurrence/);
+    assert.match(check.detail, /"Pulse Status" ×1/);
+    assert.match(check.detail, /ignored 1 preserved license\/copyright/);
+  } finally {
+    await fixture.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("brand-strings ignores old-brand matches inside brand.keep entries", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-verify-keep-"));
+  const fixture = await startFixture({
+    page: plainPage("", "<footer><p>Made by Pulse Status Labs</p></footer>"),
+  });
+  try {
+    const result = await verifyPage({
+      url: fixture.url,
+      brand: {
+        name: "Nova Status",
+        variants: ["Pulse Status"],
+        palette: { primary: "#000" },
+        keep: ["Made by Pulse Status Labs"],
+      },
+      brandDir: dir,
+      shotsDir: path.join(dir, "shots"),
+    });
+    const check = result.checks.find((c) => c.id === "brand-strings");
+    assert.ok(check);
+    assert.equal(check.status, "pass", check.detail);
+    assert.match(check.detail, /ignored 1 preserved/);
+  } finally {
+    await fixture.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("brand-strings still fails for old-brand residue outside visible text", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-verify-residue-"));
+  const fixture = await startFixture({
+    page: plainPage("", '<script>window.__upstream = "Pulse Status";</script>'),
+  });
+  try {
+    const result = await verifyPage({
+      url: fixture.url,
+      brand: { name: "Nova Status", variants: ["Pulse Status"], palette: { primary: "#000" } },
+      brandDir: dir,
+      shotsDir: path.join(dir, "shots"),
+    });
+    const check = result.checks.find((c) => c.id === "brand-strings");
+    assert.ok(check);
+    assert.equal(check.status, "fail");
+    assert.match(check.detail, /outside visible text/);
+  } finally {
+    await fixture.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("isAttributionLine recognises license/copyright lines and brand.keep entries", () => {
+  for (const line of [
+    "Copyright 2024 Pulse Status",
+    "© 2024 Pulse Status. All rights reserved.",
+    "(c) 2024 Pulse Status",
+    "SPDX-License-Identifier: MIT",
+    "Licensed under the MIT License",
+    "License: MIT",
+  ]) {
+    assert.equal(isAttributionLine(line), true, line);
+  }
+  assert.equal(isAttributionLine("Made by Pulse Status Labs", ["Made by Pulse Status Labs"]), true);
+  assert.equal(isAttributionLine("Pulse Status", ["Made by Pulse Status Labs"]), false);
+  assert.equal(isAttributionLine("Welcome to Pulse Status"), false);
+  assert.equal(isAttributionLine("© 2024", []), true);
 });

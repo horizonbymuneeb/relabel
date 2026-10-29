@@ -19,7 +19,7 @@ relabeld report --input verify.json --out report.html
 
 Status: v1.0.0. Every command in the table below is implemented: `scan`, `init`, `apply`, `verify`,
 `report`, `recipe`, `deploy`, `doctor`, `mcp`, and `skill`. The test suite and the commands shown in
-this README exercise the same code paths. Release notes: [CHANGELOG.md](CHANGELOG.md).
+this README exercise the same code paths. Release notes: [CHANGELOG.md](https://github.com/horizonbymuneeb/relabel/blob/main/CHANGELOG.md).
 
 ## Contents
 
@@ -31,6 +31,7 @@ this README exercise the same code paths. Release notes: [CHANGELOG.md](CHANGELO
 - [Agent integrations](#agent-integrations)
 - [Recipes](#recipes)
 - [Deploy](#deploy)
+- [License and attribution](#license-and-attribution)
 - [What relabeld does not do](#what-relabeld-does-not-do)
 - [Docs](#docs)
 - [Contributing](#contributing)
@@ -101,9 +102,9 @@ override and CI wiring, is in [docs/quickstart.md](docs/quickstart.md).
 
 | Command | Flags | What it does |
 |---|---|---|
-| `scan` | `[dir] [--json] [--save]` | Detect brand surfaces: strings, configs, docs, CI, license lines, logo/favicon assets. Read-only unless `--save` writes `.relabel/scan.json` inside `[dir]`. |
+| `scan` | `[dir] [--json] [--save] [--max-file-bytes <n>]` | Detect brand surfaces: strings, configs, docs, CI, license lines, logo/favicon assets. Read-only unless `--save` writes `.relabel/scan.json` inside `[dir]`. Files over `--max-file-bytes` (default 524288) are reported as skipped. |
 | `init` | `[dir] --name <brand> [--from <dir>] [--domain <host>] [--primary <#hex>] [--accent <#hex>] [--logo <path>] [--favicon <path>] [--email-from <addr>] [--force] [--json]` | Write `brand.yaml` from the scan plus the given brand. `--from` is an alias for the positional directory. Refuses to overwrite without `--force`. |
-| `apply` | `[dir] [--brand <file>] [--recipe <id\|path>] [--dry-run] [--json]` | Patch strings (case-preserving, word-boundary), copy logo/favicon assets, apply recipe file renames, write `docker-compose.relabel.yml`. Skips license files and copyright lines, and never rewrites docker image refs. |
+| `apply` | `[dir] [--brand <file>] [--recipe <id\|path>] [--dry-run] [--max-file-bytes <n>] [--json]` | Patch strings (case-preserving, word-boundary), copy logo/favicon assets, apply recipe file renames, write `docker-compose.relabel.yml`. Skips license files and copyright lines, never rewrites docker image refs, and reports oversize/binary/non-UTF-8 files as skipped instead of partially patching them. |
 | `verify` | `--url <URL> [--brand <file>] [--shots <dir>] [--cdp <endpoint>] [--executable <path>] [--out <file>] [--json]` | Headless proof: 7 checks, screenshots, exit code as the gate. Default brand file `brand.yaml`; default shots dir `.relabel/verify`. |
 | `report` | `--input <verify.json> --out <report.html> [--json]` | Render a self-contained HTML report with inline CSS and base64 screenshots. |
 | `recipe` | `<list \| show <id> \| add <path>> [--json] [--force]` | Work with the bundled per-app recipe library. `list` validates every recipe and exits non-zero if any is invalid. |
@@ -112,8 +113,8 @@ override and CI wiring, is in [docs/quickstart.md](docs/quickstart.md).
 | `skill` | `install --agent <claude\|codex\|dsh\|all> [--prefix <dir>] [--no-verify]` or `list` | Copy the bundled agent skill into the agent's skill root (`~/.claude/skills`, `~/.codex/skills`, `~/.dsh-home/skills`) and validate the install. |
 | `doctor` | `[--json]` | Check the local environment: node, docker, chromium, nginx, certbot, Cloudflare token. Exits `1` when a required check (node, browser) fails. |
 
-Exit codes: `0` success, `1` a check or step failed, `2` usage error (unknown flag, missing required
-argument, missing deploy mode).
+Exit codes: `0` no failures (skipped checks are reported; use `--json` to see them), `1` at least one
+check or step failed, `2` usage error (unknown flag, missing required argument, missing deploy mode).
 
 ## Verification
 
@@ -122,17 +123,17 @@ screenshots, and exits non-zero if any check failed. The check set is the defini
 
 | id | Pass condition |
 |---|---|
-| `brand-strings` | 0 occurrences of any old-brand `variants` entry in the rendered DOM text or page HTML (case-insensitive). |
+| `brand-strings` | 0 visible occurrences of any old-brand `variants` entry in rendered text, the title, or page HTML (case-insensitive; text deduped across viewports). Copyright/SPDX lines and `brand.keep` lines are ignored and counted; unexplained HTML residue fails; fails when no variants are configured. |
 | `brand-title` | `document.title` contains the new brand name at both viewports. |
-| `console-errors` | 0 `pageerror` events and 0 console messages of type `error`. Chromium's implicit `/favicon.ico` 404 message is ignored and counted in the detail; any other resource error still fails. |
+| `console-errors` | 0 `pageerror` events and 0 console messages of type `error`. Only Chromium's implicit `/favicon.ico` resource 404 is ignored (counted in the detail); any other 404, page error, or console error fails. |
 | `overflow-desktop` | `scrollWidth - innerWidth <= 0` at 1440x980 (only positive overflow fails). |
 | `overflow-mobile` | Same at 390x844. |
-| `screenshots` | `desktop.png` and `mobile.png` written to `--shots`. |
+| `screenshots` | Viewport captures written to `--shots`: `desktop.png` at 1440x980 and `mobile.png` at 390x844 (not full-page). |
 | `favicon` | The served HTML icon resolves to bytes (http(s) 200, or a decoded `data:` URI) whose sha256 matches a configured brand asset (`brand.favicon` or `brand.logo`); skipped when no brand asset is configured or a runtime-generated `data:` icon differs. |
 
-Screenshots are viewport-sized PNGs (not full-page). Verification runs against the deployed app, so
-rebuild and redeploy first. Reference for the check semantics and exit codes:
-[docs/verification.md](docs/verification.md).
+Verification runs against the deployed app, so rebuild and redeploy first. A `skip` is reported in the
+result but does not fail the gate; read `--json` to see pass/skip/fail per check. Reference for the
+check semantics and exit codes: [docs/verification.md](docs/verification.md).
 
 ## Agent integrations
 
@@ -191,12 +192,17 @@ and linked into `$RELABEL_NGINX_ENABLED_DIR` (default `/etc/nginx/sites-enabled`
 create-only and needs `CF_DNS_ADMIN_TOKEN`, `CF_ZONE_ID`, and `CF_ZONE_NAME`; `CF_DNS_IP` overrides
 the detected public IPv4. Nothing is deleted.
 
-## What relabeld does not do
+## License and attribution
 
-- It does not strip license, copyright, or attribution text. License files and copyright/SPDX lines
-  are skipped by `apply`, and `brand.keep` entries are never rewritten. White-labelling does not
-  change your obligations under the upstream license; check the upstream trademark policy before
-  offering a rebranded instance to third parties.
+`apply` preserves what the upstream license depends on: `LICENSE`/`COPYING`/`NOTICE` files are never
+rewritten, copyright/SPDX lines are left untouched, and `brand.keep` protects extra attribution text
+you list. It also rebrands package metadata (for example `package.json` author/contributors) and prose
+attribution inside normally patchable files, so it is not a claim that nothing attributed is ever
+touched. Keep the upstream license and notices in place, and use `brand.keep` for any attribution the
+gate must treat as preserved. White-labelling does not change your obligations under the upstream
+license; check the upstream trademark policy before offering a rebranded instance to third parties.
+
+## What relabeld does not do
 - It does not decide what "correct" means. `verify` reports what it measured; the seven checks are
   the contract.
 - It does not guess per-app knowledge. `scan` is generic, recipes are validated data (no executable
@@ -214,7 +220,7 @@ the detected public IPv4. Nothing is deleted.
 | [docs/agents.md](docs/agents.md) | MCP tools, skill installer, GitHub Action and CI gate. |
 | [docs/recipe-spec.md](docs/recipe-spec.md) | Recipe format, validation rules, contributing a recipe. |
 | [docs/demo-gallery.md](docs/demo-gallery.md) | The worked demo: before/after screenshots and the verification result. |
-| [demo/site/index.html](demo/site/index.html) | Static gallery page for the demo artifacts (no build step, no external assets). |
+| [demo/site/index.html](https://github.com/horizonbymuneeb/relabel/blob/main/demo/site/index.html) | Static gallery page for the demo artifacts (repo-only; not in the npm package). |
 
 ## Contributing
 

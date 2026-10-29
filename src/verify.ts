@@ -192,6 +192,22 @@ export function isImplicitFaviconNoise(text: string, url: string): boolean {
   }
 }
 
+const ATTRIBUTION_LINE_RE = /(copyright|©|\(c\)|all rights reserved|spdx-license|licensed under|license:)/i;
+
+/**
+ * True when a rendered-text line is a preserved license/attribution line, or contains
+ * one of the configured `brand.keep` entries. Such lines legitimately still contain
+ * the upstream brand name after a correct white-label run.
+ */
+export function isAttributionLine(line: string, keep: string[] = []): boolean {
+  if (ATTRIBUTION_LINE_RE.test(line)) return true;
+  const lower = line.toLowerCase();
+  return keep.some((entry) => {
+    const needle = entry.trim().toLowerCase();
+    return needle.length > 0 && lower.includes(needle);
+  });
+}
+
 /** Read one attribute value from a raw HTML tag string (quoted or unquoted). */
 export function attrValue(tag: string, name: string): string | null {
   const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i");
@@ -459,26 +475,85 @@ export async function verifyPage(opts: VerifyOptions): Promise<VerifyResult> {
       detail: "page did not render — cannot prove old-brand strings are gone",
     });
   } else {
-    const hits: string[] = [];
-    let total = 0;
+    const keep = (brand.keep ?? []).filter(
+      (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+    );
+    // Merge rendered text across viewports first: the same line exists on desktop and
+    // mobile, and should be reported/counted once.
+    const uniqueLines = new Set<string>();
+    const uniqueTitles = new Set<string>();
+    for (const p of probes) {
+      for (const raw of String(p.text ?? "").split(/\r?\n/)) {
+        const line = raw.trim();
+        if (line) uniqueLines.add(line);
+      }
+      const title = String(p.title ?? "").trim();
+      if (title) uniqueTitles.add(title);
+    }
+    const textLines = [...uniqueLines, ...uniqueTitles];
+    const visibleByVariant = new Map<string, number>();
+    const residueByVariant = new Map<string, number>();
+    const ignoredLines = new Set<string>();
+    let visibleTotal = 0;
+    let residueTotal = 0;
+
     for (const variant of variants) {
-      const inText = probes.reduce((n, p) => n + countOccurrences(p.text, variant), 0);
-      const inHtml = probes.reduce((n, p) => n + countOccurrences(p.html, variant), 0);
-      const n = inText + inHtml;
-      if (n > 0) {
-        total += n;
-        hits.push(`"${variant}" ×${n}`);
+      // Visible content: any match outside a preserved license/attribution/keep line.
+      const visibleLines = new Map<string, number>();
+      for (const line of textLines) {
+        const n = countOccurrences(line, variant);
+        if (n === 0) continue;
+        if (isAttributionLine(line, keep)) ignoredLines.add(line);
+        else visibleLines.set(line, (visibleLines.get(line) ?? 0) + n);
+      }
+      const visible = [...visibleLines.values()].reduce((sum, n) => sum + n, 0);
+      if (visible > 0) {
+        visibleByVariant.set(variant, visible);
+        visibleTotal += visible;
+      }
+      // HTML residue: occurrences that the rendered text of that same probe cannot
+      // explain (attributes, inline scripts, hidden nodes). License lines are already
+      // excluded via the text-side count they correspond to.
+      let residue = 0;
+      for (const p of probes) {
+        const htmlCount = countOccurrences(String(p.html ?? ""), variant);
+        const probeText =
+          String(p.text ?? "")
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0)
+            .reduce((n, line) => n + countOccurrences(line, variant), 0) +
+          countOccurrences(String(p.title ?? ""), variant);
+        residue += Math.max(0, htmlCount - probeText);
+      }
+      if (residue > 0) {
+        residueByVariant.set(variant, residue);
+        residueTotal += residue;
       }
     }
-    checks.push({
-      id: "brand-strings",
-      title: "old brand strings absent",
-      status: total === 0 ? "pass" : "fail",
-      detail:
-        total === 0
-          ? `0 occurrences across ${variants.length} old-brand variant${variants.length === 1 ? "" : "s"} (rendered text + HTML)`
-          : `${total} occurrence${total === 1 ? "" : "s"}: ${hits.join(", ")}`,
-    });
+
+    const visibleHits = [...visibleByVariant.entries()].map(([variant, n]) => `"${variant}" ×${n}`);
+    const residueHits = [...residueByVariant.entries()].map(([variant, n]) => `"${variant}" ×${n}`);
+    const ignoredNote =
+      ignoredLines.size > 0
+        ? `; ignored ${ignoredLines.size} preserved license/copyright/keep line${ignoredLines.size === 1 ? "" : "s"}`
+        : "";
+    let status: CheckResult["status"];
+    let detail: string;
+    if (visibleTotal > 0) {
+      status = "fail";
+      detail = `${visibleTotal} visible occurrence${visibleTotal === 1 ? "" : "s"}: ${visibleHits.join(", ")}${ignoredNote}`;
+      if (residueTotal > 0) {
+        detail += `; ${residueTotal} occurrence${residueTotal === 1 ? "" : "s"} outside visible text: ${residueHits.join(", ")}`;
+      }
+    } else if (residueTotal > 0) {
+      status = "fail";
+      detail = `${residueTotal} occurrence${residueTotal === 1 ? "" : "s"} outside visible text (attributes/scripts): ${residueHits.join(", ")}${ignoredNote}`;
+    } else {
+      status = "pass";
+      detail = `0 occurrences across ${variants.length} old-brand variant${variants.length === 1 ? "" : "s"}${ignoredNote} (rendered text + HTML)`;
+    }
+    checks.push({ id: "brand-strings", title: "old brand strings absent", status, detail });
   }
 
   // ---- brand-title: new brand name in <title> ----

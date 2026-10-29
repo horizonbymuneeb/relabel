@@ -40,16 +40,21 @@ relabeld scan ./my-app --json > scan.json
 
 `scan` is read-only. It reports `scannedFiles`, the `brandTokens` it considers the app's own name,
 `findings` (file, line, kind, token, match, confidence, suggestion), detected `assets` (logo,
-favicon, og-image with sizes and sha256), and per-kind `summaries`. The scan skips build and vendor
+favicon, og-image with sizes and sha256), per-kind `summaries`, and `skipped` files (with
+`maxFileBytes`). The scan skips build and vendor
 directories (`node_modules`, `dist`, `build`, `.venv`, `target`, `coverage`, ...) and hidden
 directories except CI ones (`.github`, `.gitlab`, `.circleci`, `.devcontainer`, `.vscode`).
 
 Useful variants:
 
 ```bash
-relabeld scan ./my-app --save          # also writes ./my-app/.relabel/scan.json
-relabeld scan ./my-app                 # human summary
+relabeld scan ./my-app --save                  # also writes ./my-app/.relabel/scan.json
+relabeld scan ./my-app                         # human summary
+relabeld scan ./my-app --max-file-bytes 262144 # lower the per-file read limit
 ```
+
+Files larger than `--max-file-bytes` (default 524288 bytes) are reported as skipped rather than read
+partially.
 
 If the app is already covered by a bundled recipe, `relabeld recipe show <id>` tells you what the
 recipe knows; `scan` still works the same way.
@@ -121,21 +126,27 @@ Dry-run writes nothing and prints the full plan:
 ```
 relabeld apply — /srv/my-app
 brand: Nova Status (/srv/my-app/brand.yaml)
+recipe: none (pass --recipe <id> to enable file renames)
 mode: DRY-RUN — no files written
 
-changed 4 files, 12 replacements
-  docker-compose.yml                         5
+changed 9 files, 22 replacements
+  docker-compose.yml                         3
+  index.html                                 5
   package.json                               2
-  public/index.html                          3
-  README.md                                  2
+  README.md                                  3
+  ...
 
-skipped 1:
+skipped 3:
+  docker-compose.yml                         docker image ref preserved (FROM/image) (1 lines)
+  index.html                                 copyright/license line preserved (1 lines)
   LICENSE                                    license file — attribution preserved
 
 assets would copy:
-  favicon  public/assets/favicon.svg            ← brand/favicon.svg (115 B)
+  logo     public/logo.svg                      ← public/logo.svg (312 B)
+  favicon  public/favicon.svg                   ← public/favicon.svg (197 B)
 
 compose would write: docker-compose.relabel.yml (service acme-status → nova-status)
+would run: docker compose -f docker-compose.yml -f docker-compose.relabel.yml up -d
 ```
 
 Then apply for real:
@@ -163,6 +174,9 @@ renames planned 1:
 skipped 2:
   docker-compose.yml                         docker image ref preserved (FROM/image) (1 lines)
   Dockerfile                                 docker image ref preserved (FROM/image) (1 lines)
+
+compose would write: docker-compose.relabel.yml (service uptime-kuma → nova-status)
+would run: docker compose -f docker-compose.yml -f docker-compose.relabel.yml up -d
 ```
 
 The rename runs before the app is started, so rewritten `require("./uptime-kuma-server")` references
@@ -176,6 +190,8 @@ Behaviour you can rely on:
 - Recipe-driven file renames happen after the text patch and are idempotent; a re-run reports the
   rename as already done instead of renaming twice.
 - Docker `FROM`/`image:` references are never rewritten implicitly.
+- Oversize files, binary files, and text files that are not valid UTF-8 are reported as skipped and
+  left untouched; `--max-file-bytes <n>` changes the limit (default 524288).
 - `brand.yaml` itself and the generated override are never rewritten.
 - License files and copyright/license lines are skipped; `brand.keep` entries are protected.
 - The configured logo/favicon is copied over every detected asset target of that kind.
@@ -237,6 +253,8 @@ PASS    favicon           HTTP 200, sha256 dc416a69… matches status.example.co
   image).
 - An implicit `/favicon.ico` 404 is tolerated in the console check and reported as
   `(ignored 1 implicit /favicon.ico 404)`; the favicon check itself still fails an explicit 404.
+- `brand-strings` ignores old-brand text on preserved license/copyright lines and on `brand.keep`
+  lines, and says how many it ignored in the detail; visible occurrences still fail.
 
 ## 6. Render the report
 
@@ -254,8 +272,8 @@ relabeld verify --url "$APP_URL" --brand brand.yaml --json --out verify.json
 relabeld report --input verify.json --out report.html
 ```
 
-`verify` exits `0` when no check failed (a skipped check does not fail the gate), so the first command
-is the gate. See
+`verify` exits `0` when there are no failures; skipped checks are reported in the result (`--json`), so
+the first command is the gate. See
 [docs/agents.md](agents.md) for the composite GitHub Action and the MCP wrapper, and
 [docs/verification.md](verification.md) for check semantics.
 

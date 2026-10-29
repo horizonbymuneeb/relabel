@@ -2,8 +2,9 @@
 
 A worked example of the full loop on a real app: **Uptime Kuma 1.23.17**, rebuilt from source and
 white-labelled as **Nova Status**, then verified by `relabeld` v1.0.0 in headless Chromium. The
-static page is [demo/site/index.html](../demo/site/index.html); it is self-contained and links only
-files in this repository.
+static page is [demo/site/index.html](https://github.com/horizonbymuneeb/relabel/blob/main/demo/site/index.html);
+it is self-contained and links only files in this repository. `demo/` is not part of the npm
+package, so the links below point at the GitHub tree.
 
 | | |
 |---|---|
@@ -22,8 +23,8 @@ page); after is the patched deployment's login page.
 
 | Viewport | Before | After |
 |---|---|---|
-| Desktop 1440x980 | [before-desktop-1440x980.png](../demo/shots/before-desktop-1440x980.png) | [after-desktop-1440x980.png](../demo/shots/after-desktop-1440x980.png) |
-| Mobile 390x844 | [before-mobile-390x844.png](../demo/shots/before-mobile-390x844.png) | [after-mobile-390x844.png](../demo/shots/after-mobile-390x844.png) |
+| Desktop 1440x980 | [before-desktop-1440x980.png](https://github.com/horizonbymuneeb/relabel/blob/main/demo/shots/before-desktop-1440x980.png) | [after-desktop-1440x980.png](https://github.com/horizonbymuneeb/relabel/blob/main/demo/shots/after-desktop-1440x980.png) |
+| Mobile 390x844 | [before-mobile-390x844.png](https://github.com/horizonbymuneeb/relabel/blob/main/demo/shots/before-mobile-390x844.png) | [after-mobile-390x844.png](https://github.com/horizonbymuneeb/relabel/blob/main/demo/shots/after-mobile-390x844.png) |
 
 The pairs compare the brand surface, not the page state: product name, `<title>`, logo, favicon, and
 the container/service naming from the compose override. The unpatched pair was captured from the
@@ -40,16 +41,16 @@ The demo's gate run is stored as raw JSON and as the rendered report:
 
 | Artifact | Path |
 |---|---|
-| Verify result (JSON) | [demo/reports/verify.json](../demo/reports/verify.json) |
-| Self-contained HTML report | [demo/reports/report.html](../demo/reports/report.html) |
-| Demo run notes | [demo/reports/README.md](../demo/reports/README.md) |
-| Brand spec used | [demo/reports/brand.yaml](../demo/reports/brand.yaml) |
+| Verify result (JSON) | [demo/reports/verify.json](https://github.com/horizonbymuneeb/relabel/blob/main/demo/reports/verify.json) |
+| Self-contained HTML report | [demo/reports/report.html](https://github.com/horizonbymuneeb/relabel/blob/main/demo/reports/report.html) |
+| Demo run notes | [demo/reports/README.md](https://github.com/horizonbymuneeb/relabel/blob/main/demo/reports/README.md) |
+| Brand spec used | [demo/reports/brand.yaml](https://github.com/horizonbymuneeb/relabel/blob/main/demo/reports/brand.yaml) |
 
 The committed run (generated `2026-10-29T00:02:53Z`) reports **7 passed, 0 failed, 0 skipped**:
 
 | Check | Status |
 |---|---|
-| `brand-strings` | pass — 0 occurrences across 3 old-brand variants in rendered text + HTML |
+| `brand-strings` | pass — no visible occurrences of the 3 old-brand variants in rendered text + HTML (preserved license/copyright lines are excluded) |
 | `brand-title` | pass — desktop and mobile title `Nova Status - Login` |
 | `console-errors` | pass — 0 page errors, 0 console errors |
 | `overflow-desktop` | pass — `scrollWidth 1440 - innerWidth 1440 = 0` |
@@ -108,7 +109,9 @@ install instructions, then replace step 1-3 with your app paths. If the app is n
 recipe, `scan` still finds its brand surfaces; add a recipe to record that knowledge for the next
 upgrade (`apply` consumes recipe file renames and `files:` opt-ins; `scan` does not read recipes).
 
-One warning worth repeating: `relabeld` never removes upstream license, copyright, or attribution
-text, and this demo keeps Uptime Kuma's license and notices intact. Rebranding does not change the
-upstream license obligations, and the upstream trademark policy still applies if you expose the
-rebranded instance to third parties.
+One warning worth repeating: `apply` preserves `LICENSE`/`COPYING`/`NOTICE` files and
+copyright/SPDX lines, but it also rebrands package metadata and prose attribution in normally
+patchable files, so it is not a promise that nothing attributed is ever touched. This demo keeps
+Uptime Kuma's license and notices intact; rebranding does not change the upstream license
+obligations, and the upstream trademark policy still applies if you expose the rebranded instance to
+third parties.

@@ -59,6 +59,67 @@ export async function readTextIfSmall(file: string, maxBytes = 512 * 1024): Prom
   }
 }
 
+export const DEFAULT_MAX_FILE_BYTES = 512 * 1024;
+
+export type TextSkipReason = "missing" | "unreadable" | "oversize" | "binary" | "invalid-utf8";
+
+export interface TextReadResult {
+  ok: boolean;
+  text: string;
+  bytes: number;
+  reason?: TextSkipReason;
+}
+
+/**
+ * Read a text file only when it is safe to rewrite it byte-for-byte:
+ *  - within maxBytes (otherwise `oversize`, size reported)
+ *  - free of NUL bytes (otherwise `binary`)
+ *  - valid UTF-8, proven by decode -> re-encode round-trip (otherwise `invalid-utf8`,
+ *    e.g. latin1 files; patching those would replace 0xE9/0xFF with U+FFFD)
+ * Data-safety first: callers must skip when `ok` is false.
+ */
+export async function readTextChecked(file: string, maxBytes = DEFAULT_MAX_FILE_BYTES): Promise<TextReadResult> {
+  try {
+    const st = await stat(file);
+    if (!st.isFile()) return { ok: false, text: "", bytes: st.size, reason: "unreadable" };
+    if (maxBytes >= 0 && st.size > maxBytes) {
+      return { ok: false, text: "", bytes: st.size, reason: "oversize" };
+    }
+    const buffer = await readFile(file);
+    if (buffer.includes(0)) return { ok: false, text: "", bytes: buffer.length, reason: "binary" };
+    const text = buffer.toString("utf8");
+    // Round-trip proof: any byte the decoder replaced (U+FFFD) cannot re-encode
+    // to the original bytes, so the buffer never matches.
+    if (!Buffer.from(text, "utf8").equals(buffer)) {
+      return { ok: false, text: "", bytes: buffer.length, reason: "invalid-utf8" };
+    }
+    return { ok: true, text, bytes: buffer.length };
+  } catch {
+    return { ok: false, text: "", bytes: 0, reason: "missing" };
+  }
+}
+
+/** Human-readable byte size ("734003 B" -> "717.0 KiB"). */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return `${bytes} B`;
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KiB", "MiB", "GiB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
+}
+
+/** Parse a --max-file-bytes value; null when it is not a positive integer. */
+export function parseByteLimit(value: string | true | undefined): number | null {
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return null;
+  const parsed = Number.parseInt(value.trim(), 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 export function sha256(data: Buffer | string): string {
   return createHash("sha256").update(data).digest("hex");
 }

@@ -9,7 +9,7 @@ CLI or the repository's composite action).
 | Contract | Detail |
 |---|---|
 | `--json` | Exactly one JSON object on stdout. Diagnostics go to stderr. |
-| exit `0` | Success; for `verify`, every check passed or was skipped. |
+| exit `0` | Success; for `verify`, no failures (skipped checks are reported in the result, so read `--json` to see them). |
 | exit `1` | A check or step failed. `verify` still writes the JSON, report inputs, and screenshots. |
 | exit `2` | Usage error: missing/unknown flag, missing required argument, missing `deploy` mode. |
 
@@ -18,9 +18,9 @@ CLI or the repository's composite action).
 `generatedAt`. Gate on `summary.failed === 0`.
 
 `scan --json` returns `ScanResult`: `root`, `scannedFiles`, `brandTokens`, `findings[]`, `assets[]`,
-`summaries`, `generatedAt`.
+`summaries`, `skipped[]` (files over the read limit), `maxFileBytes`, `generatedAt`.
 
-`apply --json` returns `{ dryRun, brand, changed[], skipped[], assets[], compose, totals }`.
+`apply --json` returns `{ dryRun, brand, recipe, changed[], skipped[], renames[], assets[], compose, warnings[], totals }`.
 
 ## MCP server
 

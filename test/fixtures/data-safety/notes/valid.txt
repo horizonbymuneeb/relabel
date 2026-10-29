@@ -1,0 +1,1 @@
+Pulse Status is mentioned in this perfectly valid UTF-8 file.

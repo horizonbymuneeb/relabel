@@ -1,7 +1,7 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,7 @@ import type { Ctx, ScanResult } from "../dist/types.js";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const FIXTURE = path.join(ROOT, "test/fixtures/demo-app");
+const DATA_FIXTURE = path.join(ROOT, "test/fixtures/data-safety");
 const CLI = path.join(ROOT, "dist/cli.js");
 
 const tempDirs: string[] = [];
@@ -36,6 +37,23 @@ async function fixtureCopy(): Promise<string> {
   await rm(path.join(copy, "docker-compose.relabel.yml"), { force: true });
   await rm(path.join(copy, ".relabel"), { recursive: true, force: true });
   return copy;
+}
+
+async function dataSafetyCopy(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-data-"));
+  tempDirs.push(dir);
+  const copy = path.join(dir, "data-safety");
+  await cp(DATA_FIXTURE, copy, { recursive: true });
+  return copy;
+}
+
+/** Write a >512KiB text file containing the brand string. */
+async function writeOversizeFile(dir: string): Promise<{ file: string; size: number }> {
+  const file = path.join(dir, "notes/oversize.txt");
+  const line = "Pulse Status oversize line\n";
+  const count = Math.ceil((600 * 1024) / Buffer.byteLength(line));
+  await writeFile(file, line.repeat(count), "utf8");
+  return { file, size: (await stat(file)).size };
 }
 
 function makeCtx(cwd: string, json = false): { ctx: Ctx; logs: string[]; errors: string[] } {
@@ -257,4 +275,63 @@ test("cli: fixture file set is stable (11 tracked files)", async () => {
     "public/logo.svg",
     "src/styles.css",
   ]);
+});
+
+/* ------------------------------------------------------------------ */
+/* task-14: D4/D5 data-safety accounting (invalid UTF-8 / oversize)   */
+/* ------------------------------------------------------------------ */
+
+test("scan: D4/D5 — invalid UTF-8 and oversize files are reported, never read", async () => {
+  const copy = await dataSafetyCopy();
+  const { size } = await writeOversizeFile(copy);
+  const result = await scanDir(copy);
+  const skipped = result.skipped;
+  const byFile = new Map(skipped.map((entry) => [entry.file, entry]));
+  assert.equal(byFile.get("notes/latin1.txt")?.reason, "invalid-utf8");
+  assert.equal(byFile.get("notes/binary.txt")?.reason, "binary");
+  assert.equal(byFile.get("notes/oversize.txt")?.reason, "oversize");
+  assert.equal(byFile.get("notes/oversize.txt")?.bytes, size);
+  assert.ok(skipped.every((entry) => entry.bytes > 0));
+  assert.equal(result.maxFileBytes, 512 * 1024);
+  assert.equal(result.scannedFiles, 6);
+
+  const badFiles = ["notes/latin1.txt", "notes/binary.txt", "notes/oversize.txt"];
+  assert.ok(!result.findings.some((finding) => badFiles.includes(finding.file)));
+  assert.ok(result.findings.some((finding) => finding.file === "notes/valid.txt"));
+
+  const human = makeCtx(ROOT);
+  assert.equal(await scanRun([copy], human.ctx), 0);
+  const output = human.logs.join("\n");
+  assert.match(output, /skipped 3 files/);
+  assert.match(output, /not valid UTF-8 \(binary\/latin1\)/);
+  assert.match(output, /oversize \(/);
+  assert.match(output, /--max-file-bytes/);
+});
+
+test("scan: --max-file-bytes raises the text limit (invalid UTF-8 still skipped)", async () => {
+  const copy = await dataSafetyCopy();
+  await writeOversizeFile(copy);
+
+  const raised = await scanDir(copy, { maxFileBytes: 1024 * 1024 });
+  assert.equal(raised.maxFileBytes, 1024 * 1024);
+  assert.ok(!raised.skipped.some((entry) => entry.file === "notes/oversize.txt"));
+  assert.ok(raised.findings.some((finding) => finding.file === "notes/oversize.txt"));
+  assert.ok(raised.skipped.some((entry) => entry.file === "notes/latin1.txt"));
+
+  const json = await captureStdout(() =>
+    scanRun([copy, "--max-file-bytes", "1048576", "--json"], makeCtx(ROOT, true).ctx),
+  );
+  assert.equal(json.code, 0);
+  const payload = JSON.parse(json.out) as {
+    maxFileBytes: number;
+    skipped: Array<{ file: string }>;
+    findings: Array<{ file: string }>;
+  };
+  assert.equal(payload.maxFileBytes, 1048576);
+  assert.ok(!payload.skipped.some((entry) => entry.file === "notes/oversize.txt"));
+  assert.ok(payload.findings.some((finding) => finding.file === "notes/oversize.txt"));
+
+  const bad = makeCtx(ROOT);
+  assert.equal(await scanRun([copy, "--max-file-bytes", "nope"], bad.ctx), 2);
+  assert.match(bad.errors.join(" "), /positive integer/);
 });

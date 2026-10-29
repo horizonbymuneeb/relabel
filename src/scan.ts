@@ -10,16 +10,21 @@ import path from "node:path";
 import YAML from "yaml";
 import type { AssetHit, Ctx, Finding, FindingKind, ScanResult } from "./types.js";
 import {
+  DEFAULT_MAX_FILE_BYTES,
   IGNORE_DIRS,
   escapeRegExp,
+  formatBytes,
   isTextFile,
   nowIso,
+  parseByteLimit,
+  readTextChecked,
   readTextIfSmall,
   relPosix,
   sha256,
   toPosix,
   writeJson,
 } from "./util.js";
+import type { TextSkipReason } from "./util.js";
 
 export const SCAN_USAGE = [
   "Usage: relabeld scan [dir] [--json] [--save]",
@@ -27,8 +32,10 @@ export const SCAN_USAGE = [
   "Detect brand surfaces (strings, config, docs, CI, license lines, assets)",
   "in a self-hosted app. Read-only unless --save is given.",
   "",
-  "  --json    machine-readable ScanResult",
-  "  --save    write .relabel/scan.json inside <dir>",
+  "  --json                machine-readable ScanResult",
+  "  --save                write .relabel/scan.json inside <dir>",
+  "  --max-file-bytes <n>  largest file to read as text (default 524288); larger",
+  "                        files are reported as skipped, never patched/scanned",
 ].join("\n");
 
 const MAX_FILES = 20000;
@@ -632,10 +639,25 @@ export async function scanAssets(root: string, files: string[]): Promise<AssetHi
 
 export interface ScanOptions {
   maxFiles?: number;
+  maxFileBytes?: number;
+}
+
+export interface SkippedFileInfo {
+  file: string;
+  reason: TextSkipReason;
+  bytes: number;
+}
+
+/** ScanResult plus data-safety accounting (files deliberately not read). */
+export interface ScanResultWithDetails extends ScanResult {
+  skipped: SkippedFileInfo[];
+  maxFileBytes: number;
 }
 
 /** Scan a repo directory and return a complete ScanResult. */
-export async function scanDir(dir: string, options: ScanOptions = {}): Promise<ScanResult> {
+export async function scanDir(dir: string, options: ScanOptions = {}): Promise<ScanResultWithDetails> {
+  const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  const skipped: SkippedFileInfo[] = [];
   const root = path.resolve(dir);
   const files = await walkRepo(root, options.maxFiles ?? MAX_FILES);
   const seeds = await collectSeeds(root, files);
@@ -654,8 +676,13 @@ export async function scanDir(dir: string, options: ScanOptions = {}): Promise<S
     const rel = relPosix(root, file);
     if (isBrandSpecFile(rel)) continue;
     if (!isScannableText(rel)) continue;
-    const text = await readTextIfSmall(file);
-    if (text === null || text.includes("\u0000")) continue;
+    // Data-safety: never decode a file we could not rewrite byte-for-byte.
+    const read = await readTextChecked(file, maxFileBytes);
+    if (!read.ok) {
+      skipped.push({ file: rel, reason: read.reason ?? "unreadable", bytes: read.bytes });
+      continue;
+    }
+    const text = read.text;
     const lines = text.split("\n");
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
@@ -695,6 +722,8 @@ export async function scanDir(dir: string, options: ScanOptions = {}): Promise<S
   const summaries: Record<string, number> = { string: 0, asset: 0, config: 0, docs: 0, ci: 0, license: 0 };
   for (const finding of findings) summaries[finding.kind] = (summaries[finding.kind] ?? 0) + 1;
 
+  skipped.sort((a, b) => a.file.localeCompare(b.file));
+
   return {
     root,
     scannedFiles: files.length,
@@ -703,6 +732,8 @@ export async function scanDir(dir: string, options: ScanOptions = {}): Promise<S
     assets,
     summaries,
     generatedAt: nowIso(),
+    skipped,
+    maxFileBytes,
   };
 }
 
@@ -710,7 +741,7 @@ function shortHash(hash: string): string {
   return hash.slice(0, 12);
 }
 
-function humanReport(result: ScanResult, saved: string | null): string[] {
+function humanReport(result: ScanResultWithDetails, saved: string | null): string[] {
   const lines: string[] = [];
   const kinds = Object.entries(result.summaries)
     .filter(([, count]) => count > 0)
@@ -744,6 +775,25 @@ function humanReport(result: ScanResult, saved: string | null): string[] {
       );
     }
   }
+  if (result.skipped.length) {
+    lines.push("");
+    const bytes = result.skipped.reduce((sum, entry) => sum + entry.bytes, 0);
+    lines.push(
+      `skipped ${result.skipped.length} files (${formatBytes(bytes)}) — not read, never patched:`,
+    );
+    for (const entry of result.skipped) {
+      const reason =
+        entry.reason === "invalid-utf8"
+          ? "not valid UTF-8 (binary/latin1)"
+          : entry.reason === "oversize"
+            ? `oversize (${formatBytes(entry.bytes)} > --max-file-bytes ${formatBytes(result.maxFileBytes)})`
+            : entry.reason === "binary"
+              ? "binary (NUL bytes)"
+              : entry.reason;
+      lines.push(`  ${entry.file.padEnd(42)} ${reason}`);
+    }
+    lines.push("  raise the limit with --max-file-bytes <n> if these must be scanned");
+  }
   if (saved) {
     lines.push("");
     lines.push(`saved: ${saved}`);
@@ -759,10 +809,18 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     ctx.log(SCAN_USAGE);
     return 0;
   }
-  const errors = flagErrors(parsed, ["json", "save", "help"]);
+  const errors = flagErrors(parsed, ["json", "save", "help", "max-file-bytes"]);
   if (errors.length || parsed.positionals.length > 1) {
     for (const error of errors) ctx.error(`scan: ${error}`);
     if (parsed.positionals.length > 1) ctx.error("scan: expected at most one directory argument");
+    ctx.error(SCAN_USAGE);
+    return 2;
+  }
+
+  const maxFileBytesRaw = parsed.flags["max-file-bytes"];
+  const maxFileBytes = maxFileBytesRaw === undefined ? DEFAULT_MAX_FILE_BYTES : parseByteLimit(maxFileBytesRaw);
+  if (maxFileBytes === null) {
+    ctx.error("scan: --max-file-bytes requires a positive integer");
     ctx.error(SCAN_USAGE);
     return 2;
   }
@@ -780,7 +838,7 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     return 1;
   }
 
-  const result = await scanDir(target);
+  const result = await scanDir(target, { maxFileBytes });
   let saved: string | null = null;
   if (parsed.flags.save === true) {
     const savePath = path.join(target, ".relabel", "scan.json");

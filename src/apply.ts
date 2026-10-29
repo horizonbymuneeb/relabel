@@ -19,14 +19,19 @@ import path from "node:path";
 import YAML from "yaml";
 import type { AssetHit, BrandSpec, Ctx, Recipe, RecipeRename } from "./types.js";
 import {
+  DEFAULT_MAX_FILE_BYTES,
   escapeRegExp,
   exists,
+  formatBytes,
   loadYamlFile,
+  parseByteLimit,
+  readTextChecked,
   readTextIfSmall,
   relPosix,
   slugify,
   toPosix,
 } from "./util.js";
+import type { TextSkipReason } from "./util.js";
 import {
   flagErrors,
   flagString,
@@ -50,6 +55,8 @@ export const APPLY_USAGE = [
   "  --recipe <id>    recipe to use (id in the recipe library or a path to recipe.yaml);",
   "                   auto-detected from package.json/dirname when omitted",
   "  --dry-run        report changes, write nothing",
+  "  --max-file-bytes <n>  largest text file to patch (default 524288); larger",
+  "                        files are reported as skipped and left untouched",
   "  --json           machine-readable {changed,skipped,renames}",
 ].join("\n");
 
@@ -81,6 +88,7 @@ interface Skip {
   file: string;
   reason: string;
   lines?: number;
+  bytes?: number;
 }
 
 interface AssetOp {
@@ -613,6 +621,22 @@ function makeVirtualFs(plan: RenamePlan): {
 }
 
 
+/** Human label for a data-safety skip (invalid UTF-8 / binary / oversize). */
+function formatSkipReason(reason: TextSkipReason | undefined, bytes: number, limit: number): string {
+  switch (reason) {
+    case "invalid-utf8":
+      return "not valid UTF-8 (binary/latin1)";
+    case "binary":
+      return "binary (NUL bytes)";
+    case "oversize":
+      return `oversize (${formatBytes(bytes)} > --max-file-bytes ${formatBytes(limit)})`;
+    case "missing":
+      return "missing/unreadable";
+    default:
+      return "unreadable";
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* compose overlay                                                    */
 /* ------------------------------------------------------------------ */
@@ -645,7 +669,7 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     ctx.log(APPLY_USAGE);
     return 0;
   }
-  const errors = flagErrors(parsed, ["json", "help", "brand", "dry-run", "recipe"]);
+  const errors = flagErrors(parsed, ["json", "help", "brand", "dry-run", "recipe", "max-file-bytes"]);
   if (errors.length || parsed.positionals.length > 1) {
     for (const error of errors) ctx.error(`apply: ${error}`);
     if (parsed.positionals.length > 1) ctx.error("apply: expected at most one directory argument");
@@ -655,6 +679,13 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
 
   const root = path.resolve(ctx.cwd, parsed.positionals[0] ?? ".");
   const dryRun = parsed.flags["dry-run"] === true;
+  const maxFileBytesRaw = parsed.flags["max-file-bytes"];
+  const maxFileBytes = maxFileBytesRaw === undefined ? DEFAULT_MAX_FILE_BYTES : parseByteLimit(maxFileBytesRaw);
+  if (maxFileBytes === null) {
+    ctx.error("apply: --max-file-bytes requires a positive integer");
+    ctx.error(APPLY_USAGE);
+    return 2;
+  }
 
   let rootInfo;
   try {
@@ -713,17 +744,24 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   const renameSources = new Set(renamePlan.moves.map((move) => path.normalize(move.fromAbs)));
 
   // Compose plan is derived from the pristine compose file before text patches.
+  const skipped: Skip[] = [];
   const composeFile = pickCompose(files);
   let composeOp: ComposeOp | null = null;
   let overlayPath: string | null = null;
   let overlayContents: string | null = null;
   const composeRel = composeFile ? relPosix(root, composeFile) : GENERATED_COMPOSE;
   if (composeFile) {
-    const rawCompose = await readTextIfSmall(composeFile, 512 * 1024);
+    const composeRead = await readTextChecked(composeFile, maxFileBytes);
     let services: Record<string, unknown> = {};
-    if (rawCompose) {
+    if (!composeRead.ok) {
+      skipped.push({
+        file: composeRel,
+        reason: formatSkipReason(composeRead.reason, composeRead.bytes, maxFileBytes),
+        bytes: composeRead.bytes,
+      });
+    } else {
       try {
-        const doc = YAML.parse(rawCompose) as Record<string, unknown> | null;
+        const doc = YAML.parse(composeRead.text) as Record<string, unknown> | null;
         if (doc && typeof doc.services === "object" && doc.services) {
           services = doc.services as Record<string, unknown>;
         }
@@ -754,7 +792,6 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   }
 
   const changed: Change[] = [];
-  const skipped: Skip[] = [];
   const skipFiles = new Set([brandRel, GENERATED_COMPOSE]);
   const pending: Array<{ fileAbs: string; rel: string; content: string }> = [];
   const refCandidates: Array<{ fileAbs: string; specifier: string }> = [];
@@ -772,8 +809,18 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
       continue;
     }
     if (!isScannableText(rel)) continue;
-    const text = await readTextIfSmall(file);
-    if (text === null || text.includes("\u0000")) continue;
+    // D4/D5 data-safety: never patch a file whose bytes would not survive a
+    // UTF-8 round-trip, and account for oversize files instead of skipping silently.
+    const read = await readTextChecked(file, maxFileBytes);
+    if (!read.ok) {
+      skipped.push({
+        file: rel,
+        reason: formatSkipReason(read.reason, read.bytes, maxFileBytes),
+        bytes: read.bytes,
+      });
+      continue;
+    }
+    const text = read.text;
     // A recipe `files:` rule is the only way to opt a docker image line back in.
     const dockerOptIn = recipeTargetsFile(recipe, rel);
     const lines = text.split("\n");

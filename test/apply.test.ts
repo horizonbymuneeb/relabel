@@ -17,6 +17,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 const FIXTURE = path.join(ROOT, "test/fixtures/demo-app");
 const MODULE_FIXTURE = path.join(ROOT, "test/fixtures/module-app");
+const DATA_FIXTURE = path.join(ROOT, "test/fixtures/data-safety");
 const CLI = path.join(ROOT, "dist/cli.js");
 
 const tempDirs: string[] = [];
@@ -45,6 +46,23 @@ async function moduleWorkspace(): Promise<string> {
   await rm(path.join(copy, "docker-compose.relabel.yml"), { force: true });
   await rm(path.join(copy, ".relabel"), { recursive: true, force: true });
   return copy;
+}
+
+async function dataSafetyCopy(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-data-apply-"));
+  tempDirs.push(dir);
+  const copy = path.join(dir, "data-safety");
+  await cp(DATA_FIXTURE, copy, { recursive: true });
+  return copy;
+}
+
+/** Write a >512KiB text file containing the brand string. */
+async function writeOversizeFile(dir: string): Promise<{ file: string; size: number }> {
+  const file = path.join(dir, "notes/oversize.txt");
+  const line = "Pulse Status oversize line\n";
+  const count = Math.ceil((600 * 1024) / Buffer.byteLength(line));
+  await writeFile(file, line.repeat(count), "utf8");
+  return { file, size: (await stat(file)).size };
 }
 
 async function fileExists(file: string): Promise<boolean> {
@@ -105,7 +123,7 @@ interface ApplyPayload {
   dryRun: boolean;
   recipe: { id: string; name: string; source: string; auto: boolean } | null;
   changed: Array<{ file: string; replacements: number }>;
-  skipped: Array<{ file: string; reason: string; lines?: number }>;
+  skipped: Array<{ file: string; reason: string; lines?: number; bytes?: number }>;
   renames: Array<{ from: string; to: string; status: string; written: boolean }>;
   warnings: string[];
   compose: { file: string; service: string; newService: string } | null;
@@ -642,4 +660,71 @@ test("apply: M6 — printed compose command includes the base compose file", asy
     assert.equal(payload.compose?.base, "docker-compose.yml");
     assert.equal(payload.compose?.file, "docker-compose.relabel.yml");
   });
+});
+
+/* ------------------------------------------------------------------ */
+/* task-14: D4 non-UTF8 corruption + D5 oversize accounting           */
+/* ------------------------------------------------------------------ */
+
+test("apply: D4 — invalid UTF-8 files are skipped and their bytes are preserved", async () => {
+  const copy = await dataSafetyCopy();
+  const { size } = await writeOversizeFile(copy);
+  await initWithBrand(copy);
+
+  const latin1Before = await readFile(path.join(copy, "notes/latin1.txt"));
+  const binaryBefore = await readFile(path.join(copy, "notes/binary.txt"));
+  const oversizeBefore = await readFile(path.join(copy, "notes/oversize.txt"));
+  const latin1Hash = sha256(latin1Before);
+
+  const { code, payload, errors } = await applyJson(copy);
+  assert.equal(code, 0, errors.join("\n"));
+
+  const skippedFor = (file: string) => payload.skipped.find((entry) => entry.file === file);
+  assert.equal(skippedFor("notes/latin1.txt")?.reason, "not valid UTF-8 (binary/latin1)");
+  assert.equal(skippedFor("notes/binary.txt")?.reason, "binary (NUL bytes)");
+  assert.match(skippedFor("notes/oversize.txt")?.reason ?? "", /^oversize \(/);
+  assert.equal(skippedFor("notes/oversize.txt")?.bytes, size);
+
+  // the latin1 / binary / oversize bytes are untouched (no U+FFFD corruption)
+  const latin1After = await readFile(path.join(copy, "notes/latin1.txt"));
+  assert.equal(sha256(latin1After), latin1Hash);
+  assert.ok(latin1After.equals(latin1Before));
+  assert.ok((await readFile(path.join(copy, "notes/binary.txt"))).equals(binaryBefore));
+  assert.ok((await readFile(path.join(copy, "notes/oversize.txt"))).equals(oversizeBefore));
+  assert.ok(!latin1After.includes(Buffer.from("\uFFFD", "utf8")), "no U+FFFD (EF BF BD) corruption bytes");
+
+  // valid UTF-8 text was still patched
+  assert.match(await read(copy, "notes/valid.txt"), /Nova Demo/);
+  assert.ok(payload.changed.some((entry) => entry.file === "notes/valid.txt"));
+});
+
+test("apply: D5 — --max-file-bytes raises the limit and the big file gets patched", async () => {
+  const copy = await dataSafetyCopy();
+  await writeOversizeFile(copy);
+  await initWithBrand(copy);
+
+  const { code, payload, errors } = await applyJson(copy, ["--max-file-bytes", "1048576"]);
+  assert.equal(code, 0, errors.join("\n"));
+  assert.ok(!payload.skipped.some((entry) => entry.file === "notes/oversize.txt"));
+  assert.ok(payload.changed.some((entry) => entry.file === "notes/oversize.txt"));
+  assert.match(await read(copy, "notes/oversize.txt"), /Nova Demo/);
+  // invalid UTF-8 stays skipped even with a raised size limit
+  assert.ok(payload.skipped.some((entry) => entry.file === "notes/latin1.txt"));
+
+  const bad = makeCtx(ROOT);
+  assert.equal(await applyRun([copy, "--max-file-bytes", "nope"], bad.ctx), 2);
+  assert.match(bad.errors.join(" "), /positive integer/);
+});
+
+test("apply: dry-run reports the same data-safety skips but writes nothing", async () => {
+  const copy = await dataSafetyCopy();
+  await writeOversizeFile(copy);
+  await initWithBrand(copy);
+  const before = await snapshot(copy);
+  const { code, payload, errors } = await applyJson(copy, ["--dry-run"]);
+  assert.equal(code, 0, errors.join("\n"));
+  assert.equal(payload.dryRun, true);
+  assert.ok(payload.skipped.some((entry) => entry.file === "notes/latin1.txt"));
+  assert.ok(payload.skipped.some((entry) => entry.file === "notes/oversize.txt"));
+  assert.deepEqual(await snapshot(copy), before);
 });

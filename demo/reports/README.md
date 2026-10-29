@@ -88,10 +88,10 @@ docker run -d --name uptime-kuma-demo --restart unless-stopped \
 git clone --depth 1 https://github.com/louislam/uptime-kuma.git /srv/relabel-demo/uptime-kuma-src
 git -C /srv/relabel-demo/uptime-kuma-src fetch --depth 1 origin tag 1.23.17
 git -C /srv/relabel-demo/uptime-kuma-src checkout 1.23.17
-# DNS: proxied A record, Cloudflare zone cac6267e0c6f3d8d8057cbb12141deee (record 3ac09904b057d973f2a4b58a743aee78)
+# DNS: proxied A record, Cloudflare zone <redacted-cf-zone-id> (record <redacted-cf-record-id>)
 curl -X POST -H "Authorization: Bearer $CF_DNS_ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  --data '{"type":"A","name":"status.muneebs.space","content":"129.146.163.180","ttl":1,"proxied":true}' \
-  "https://api.cloudflare.com/client/v4/zones/cac6267e0c6f3d8d8057cbb12141deee/dns_records"
+  --data '{"type":"A","name":"status.muneebs.space","content":"<server-ip>","ttl":1,"proxied":true}' \
+  "https://api.cloudflare.com/client/v4/zones/<redacted-cf-zone-id>/dns_records"
 # nginx: /etc/nginx/sites-available/status.muneebs.space (proxy_pass 127.0.0.1:3001,
 #        websocket Upgrade/Connection headers); config backup /etc/nginx/backup-20261029-035132
 nginx -t && systemctl reload nginx
