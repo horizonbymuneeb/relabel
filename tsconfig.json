@@ -10,7 +10,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "declaration": false,
-    "sourceMap": true,
+    "sourceMap": false,
     "resolveJsonModule": true,
     "types": ["node"]
   },

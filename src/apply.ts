@@ -589,6 +589,40 @@ function resolveSpecifier(
   return null;
 }
 
+const MARKUP_STYLE_RE = /\.(html?|xhtml|css|scss|sass|less|svg|vue|svelte|astro)$/i;
+const ASSET_REF_PATTERNS: RegExp[] = [
+  /\b(?:href|src)\s*=\s*["']([^"']+)["']/gi,
+  /\burl\(\s*["']?([^"')]+?)["']?\s*\)/gi,
+];
+const NON_RELATIVE_ASSET_RE = /^(?:[a-z][a-z0-9+.-]*:|\/\/|#|\/)/i;
+
+/** Extract deduped relative asset refs (href/src/url()) from HTML/CSS/markup. */
+export function extractRelativeAssetRefs(text: string): string[] {
+  const found = new Set<string>();
+  for (const pattern of ASSET_REF_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(text)) !== null) {
+      const raw = match[1].trim();
+      if (!raw || NON_RELATIVE_ASSET_RE.test(raw)) continue;
+      if (raw.includes("{{") || raw.includes("}}") || raw.includes("${") || raw.includes("<%")) continue;
+      const cleaned = stripSpecifierSuffix(raw);
+      if (!cleaned || cleaned === "." || cleaned === ".." || /\s/.test(cleaned)) continue;
+      found.add(cleaned);
+    }
+  }
+  return [...found];
+}
+
+function resolveAssetRef(
+  baseFileAbs: string,
+  ref: string,
+  existsFn: (candidate: string) => boolean,
+): string | null {
+  const target = path.resolve(path.dirname(baseFileAbs), stripSpecifierSuffix(ref));
+  return existsFn(target) ? path.normalize(target) : null;
+}
+
 /** Map a path into its post-rename location (directories handled via prefix). */
 function makeVirtualFs(plan: RenamePlan): {
   virtualPath: (abs: string) => string;
@@ -742,6 +776,13 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   const renamePlan = await planRenames(recipe, brand, root, dryRun, warnings);
   const { virtualPath, existsVirtual } = makeVirtualFs(renamePlan);
   const renameSources = new Set(renamePlan.moves.map((move) => path.normalize(move.fromAbs)));
+  const isInsideRenameSource = (targetAbs: string): boolean => {
+    const normalized = path.normalize(targetAbs);
+    for (const source of renameSources) {
+      if (normalized === source || normalized.startsWith(source + path.sep)) return true;
+    }
+    return false;
+  };
 
   // Compose plan is derived from the pristine compose file before text patches.
   const skipped: Skip[] = [];
@@ -793,8 +834,8 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
 
   const changed: Change[] = [];
   const skipFiles = new Set([brandRel, GENERATED_COMPOSE]);
-  const pending: Array<{ fileAbs: string; rel: string; content: string }> = [];
-  const refCandidates: Array<{ fileAbs: string; specifier: string }> = [];
+  const pending: Array<{ fileAbs: string; rel: string; original: string; content: string }> = [];
+  const refCandidates: Array<{ fileAbs: string; specifier: string; kind: "module" | "asset" }> = [];
 
   for (const file of files) {
     const rel = relPosix(root, file);
@@ -857,10 +898,12 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     });
     const outContent = outLines.join("\n");
     const isCode = MODULE_CODE_RE.test(rel);
+    const isMarkup = MARKUP_STYLE_RE.test(rel);
     const oldSpecifiers = isCode ? extractRelativeSpecifiers(text) : [];
+    const oldAssetRefs = isMarkup ? extractRelativeAssetRefs(text) : [];
     if (replacements > 0) {
       changed.push({ file: rel, replacements });
-      pending.push({ fileAbs: file, rel, content: outContent });
+      pending.push({ fileAbs: file, rel, original: text, content: outContent });
     }
     if (isCode) {
       const newSpecifiers = replacements > 0 ? extractRelativeSpecifiers(outContent) : oldSpecifiers;
@@ -868,15 +911,43 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
       // (a) specifiers rewritten by this apply must point at a real file
       for (const specifier of newSpecifiers) {
         if (replacements > 0 && !oldSet.has(specifier)) {
-          refCandidates.push({ fileAbs: file, specifier });
+          refCandidates.push({ fileAbs: file, specifier, kind: "module" });
         }
       }
       // (b) untouched specifiers pointing at a file a recipe renames would break
       for (const specifier of oldSpecifiers) {
         if (!newSpecifiers.includes(specifier)) continue;
         const resolved = resolveSpecifier(file, specifier, exists);
-        if (resolved && renameSources.has(path.normalize(resolved))) {
-          refCandidates.push({ fileAbs: file, specifier });
+        if (resolved && isInsideRenameSource(resolved)) {
+          refCandidates.push({ fileAbs: file, specifier, kind: "module" });
+        }
+      }
+    }
+    if (isMarkup) {
+      const newAssetRefs = replacements > 0 ? extractRelativeAssetRefs(outContent) : oldAssetRefs;
+      const oldSet = new Set(oldAssetRefs);
+      // (a) rewritten asset refs (href/src/url()) must still resolve after renames
+      for (const ref of newAssetRefs) {
+        if (replacements === 0 || oldSet.has(ref)) continue;
+        const cleaned = stripSpecifierSuffix(ref);
+        const hadExtension = Boolean(path.extname(cleaned));
+        let oldTargetExisted = false;
+        const index = newAssetRefs.indexOf(ref);
+        const oldRef = oldAssetRefs.length === newAssetRefs.length ? oldAssetRefs[index] : undefined;
+        if (oldRef) {
+          oldTargetExisted = exists(path.resolve(path.dirname(file), stripSpecifierSuffix(oldRef)));
+        }
+        // SPA routes without a file extension were never files; only guard real assets.
+        if (hadExtension || oldTargetExisted) {
+          refCandidates.push({ fileAbs: file, specifier: ref, kind: "asset" });
+        }
+      }
+      // (b) unchanged asset refs pointing at a renamed file/dir would break too
+      for (const ref of oldAssetRefs) {
+        if (!newAssetRefs.includes(ref)) continue;
+        const target = path.resolve(path.dirname(file), stripSpecifierSuffix(ref));
+        if (isInsideRenameSource(target)) {
+          refCandidates.push({ fileAbs: file, specifier: ref, kind: "asset" });
         }
       }
     }
@@ -891,24 +962,34 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     }
   }
 
-  // B4: refuse to write a tree whose rewritten module refs would not resolve.
-  const danglingRefs: Array<{ file: string; specifier: string }> = [];
+  // B4 + markup guard: refuse to write a tree whose rewritten module/asset refs
+  // (require/import/from and href/src/url()) would not resolve after renames.
+  const danglingRefs: Array<{ file: string; specifier: string; kind: "module" | "asset" }> = [];
   const seenRefs = new Set<string>();
   for (const candidate of refCandidates) {
     const baseFile = virtualPath(candidate.fileAbs);
-    const resolved = resolveSpecifier(baseFile, candidate.specifier, existsVirtual);
+    const resolved =
+      candidate.kind === "module"
+        ? resolveSpecifier(baseFile, candidate.specifier, existsVirtual)
+        : resolveAssetRef(baseFile, candidate.specifier, existsVirtual);
     if (resolved) continue;
     const displayRel = toPosix(path.relative(root, baseFile)) || path.basename(baseFile);
-    const key = `${displayRel}|${candidate.specifier}`;
+    const key = `${displayRel}|${candidate.specifier}|${candidate.kind}`;
     if (seenRefs.has(key)) continue;
     seenRefs.add(key);
-    danglingRefs.push({ file: displayRel, specifier: candidate.specifier });
+    danglingRefs.push({ file: displayRel, specifier: candidate.specifier, kind: candidate.kind });
   }
-  danglingRefs.sort((a, b) => a.file.localeCompare(b.file) || a.specifier.localeCompare(b.specifier));
+  danglingRefs.sort(
+    (a, b) => a.file.localeCompare(b.file) || a.specifier.localeCompare(b.specifier) || a.kind.localeCompare(b.kind),
+  );
   if (danglingRefs.length > 0) {
-    ctx.error(
-      `apply: refusing to write — ${danglingRefs.length} relative module ref(s) would not resolve after rebrand:`,
-    );
+    const error = `refusing to write — ${danglingRefs.length} relative ref(s) would not resolve after rebrand`;
+    if (ctx.json) {
+      // exactly one JSON object on stdout for machine callers
+      console.log(JSON.stringify({ ok: false, error, danglingRefs }, null, 2));
+      return 1;
+    }
+    ctx.error(`apply: ${error}:`);
     for (const entry of danglingRefs.slice(0, 50)) ctx.error(`  ${entry.file}:${entry.specifier}`);
     if (danglingRefs.length > 50) ctx.error(`  … ${danglingRefs.length - 50} more`);
     ctx.error(
@@ -919,7 +1000,10 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
 
   // Guard passed: apply the pending text patches, then move the renamed files.
   if (!dryRun) {
-    for (const entry of pending) await writeFile(entry.fileAbs, entry.content, "utf8");
+    for (const entry of pending) {
+      if (entry.original === entry.content) continue; // byte-identical: no write
+      await writeFile(entry.fileAbs, entry.content, "utf8");
+    }
     await commitRenames(renamePlan);
   }
 
@@ -954,6 +1038,16 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
         assetOps.push({ kind, from, file: target.file, bytes: buffer.length, written: false });
         continue;
       }
+      let unchanged = false;
+      try {
+        unchanged = (await readFile(targetPath)).equals(buffer);
+      } catch {
+        unchanged = false;
+      }
+      if (unchanged) {
+        assetOps.push({ kind, from, file: target.file, bytes: buffer.length, written: false });
+        continue;
+      }
       if (!dryRun) await writeFile(targetPath, buffer);
       assetOps.push({ kind, from, file: target.file, bytes: buffer.length, written: !dryRun });
     }
@@ -962,13 +1056,17 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
   await copyAsset("favicon", brand.favicon);
 
   // Write the compose override last (plan was computed from pristine input).
-  let composeWritten = false;
+  let composeChanged = false;
   if (overlayPath && overlayContents) {
-    if (!dryRun) {
-      await writeFile(overlayPath, overlayContents, "utf8");
-      composeWritten = true;
+    let existing: string | null = null;
+    try {
+      existing = await readFile(overlayPath, "utf8");
+    } catch {
+      existing = null;
     }
-    if (composeOp) composeOp.written = !dryRun;
+    composeChanged = existing !== overlayContents;
+    if (composeChanged && !dryRun) await writeFile(overlayPath, overlayContents, "utf8");
+    if (composeOp) composeOp.written = composeChanged && !dryRun;
   } else if (!composeFile) {
     skipped.push({ file: GENERATED_COMPOSE, reason: "no compose file found" });
   }
@@ -1057,10 +1155,9 @@ export async function run(argv: string[], ctx: Ctx): Promise<number> {
     }
   }
   if (composeOp && composeCommand) {
+    const composeState = composeChanged ? (dryRun ? "would write" : "wrote") : "unchanged";
     ctx.log("");
-    ctx.log(
-      `compose ${dryRun ? "would write" : "wrote"}: ${composeOp.file} (service ${composeOp.service} → ${composeOp.newService})`,
-    );
+    ctx.log(`compose ${composeState}: ${composeOp.file} (service ${composeOp.service} → ${composeOp.newService})`);
     ctx.log(`${dryRun ? "would run" : "run"}: ${composeCommand}`);
   }
   if (warnings.length) {

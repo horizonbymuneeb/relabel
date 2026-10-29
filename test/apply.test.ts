@@ -18,6 +18,7 @@ const ROOT = path.resolve(HERE, "..");
 const FIXTURE = path.join(ROOT, "test/fixtures/demo-app");
 const MODULE_FIXTURE = path.join(ROOT, "test/fixtures/module-app");
 const DATA_FIXTURE = path.join(ROOT, "test/fixtures/data-safety");
+const MARKUP_FIXTURE = path.join(ROOT, "test/fixtures/markup-app");
 const CLI = path.join(ROOT, "dist/cli.js");
 
 const tempDirs: string[] = [];
@@ -63,6 +64,42 @@ async function writeOversizeFile(dir: string): Promise<{ file: string; size: num
   const count = Math.ceil((600 * 1024) / Buffer.byteLength(line));
   await writeFile(file, line.repeat(count), "utf8");
   return { file, size: (await stat(file)).size };
+}
+
+async function markupCopy(): Promise<string> {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-markup-"));
+  tempDirs.push(dir);
+  const copy = path.join(dir, "markup-app");
+  await cp(MARKUP_FIXTURE, copy, { recursive: true });
+  await rm(path.join(copy, "brand.yaml"), { force: true });
+  await rm(path.join(copy, "docker-compose.relabel.yml"), { force: true });
+  await rm(path.join(copy, ".relabel"), { recursive: true, force: true });
+  return copy;
+}
+
+/** Recipe for markup-app: renames the three brand-named asset files. */
+function markupRecipeYaml(): string {
+  return [
+    "id: pulse-status",
+    "name: Pulse Status",
+    "upstream: https://example.com/pulse-status",
+    "match:",
+    "  - package.json",
+    "  - README.md",
+    "  - index.html",
+    "  - styles.css",
+    "strings:",
+    "  - Pulse Status",
+    "  - pulse-status",
+    "assets: []",
+    "renames:",
+    '  - from: public/pulse-status-logo.svg',
+    '    to: "public/{{slug}}-logo.svg"',
+    '  - from: public/pulse-status-favicon.svg',
+    '    to: "public/{{slug}}-favicon.svg"',
+    '  - from: public/pulse-status-bg.svg',
+    '    to: "public/{{slug}}-bg.svg"',
+  ].join("\n") + "\n";
 }
 
 async function fileExists(file: string): Promise<boolean> {
@@ -727,4 +764,97 @@ test("apply: dry-run reports the same data-safety skips but writes nothing", asy
   assert.ok(payload.skipped.some((entry) => entry.file === "notes/latin1.txt"));
   assert.ok(payload.skipped.some((entry) => entry.file === "notes/oversize.txt"));
   assert.deepEqual(await snapshot(copy), before);
+});
+
+/* ------------------------------------------------------------------ */
+/* task-15: markup asset-ref guard, JSON refusal, written flags       */
+/* ------------------------------------------------------------------ */
+
+test("apply: HTML/CSS asset refs are guarded — no recipe means refusal, exit 1, nothing written", async () => {
+  const copy = await markupCopy();
+  await initWithBrand(copy);
+  const before = await snapshot(copy);
+
+  const { code, payload, errors } = await applyJson(copy);
+  assert.equal(code, 1, errors.join("\n"));
+  assert.equal(payload.ok, false);
+  assert.match(payload.error ?? "", /refusing to write/);
+  const refs = payload.danglingRefs ?? [];
+  const bySpec = new Map(refs.map((entry) => [`${entry.file}:${entry.specifier}`, entry.kind]));
+  assert.equal(bySpec.get("index.html:public/nova-demo-logo.svg"), "asset");
+  assert.equal(bySpec.get("index.html:public/nova-demo-favicon.svg"), "asset");
+  assert.equal(bySpec.get("styles.css:public/nova-demo-bg.svg"), "asset");
+
+  // nothing written: html/css/css refs and asset filenames untouched
+  assert.deepEqual(await snapshot(copy), before);
+  assert.match(await read(copy, "index.html"), /public\/pulse-status-logo\.svg/);
+  assert.match(await read(copy, "styles.css"), /url\(public\/pulse-status-bg\.svg\)/);
+  assert.ok(await fileExists(path.join(copy, "public/pulse-status-logo.svg")));
+  assert.equal(await fileExists(path.join(copy, "public/nova-demo-logo.svg")), false);
+  assert.equal(await fileExists(path.join(copy, "docker-compose.relabel.yml")), false);
+});
+
+test("apply: HTML/CSS asset refs resolve when the recipe renames the assets", async () => {
+  const copy = await markupCopy();
+  const library = await recipeLibrary(markupRecipeYaml());
+  await withRecipeLibrary(library, async () => {
+    await initWithBrand(copy);
+    const { code, payload, errors } = await applyJson(copy);
+    assert.equal(code, 0, errors.join("\n"));
+    assert.equal(payload.renames.filter((entry) => entry.status === "renamed").length, 3);
+    assert.ok(await fileExists(path.join(copy, "public/nova-demo-logo.svg")));
+    assert.ok(await fileExists(path.join(copy, "public/nova-demo-favicon.svg")));
+    assert.ok(await fileExists(path.join(copy, "public/nova-demo-bg.svg")));
+    assert.equal(await fileExists(path.join(copy, "public/pulse-status-logo.svg")), false);
+    const html = await read(copy, "index.html");
+    assert.match(html, /href="public\/nova-demo-favicon\.svg"/);
+    assert.match(html, /src="public\/nova-demo-logo\.svg"/);
+    assert.match(await read(copy, "styles.css"), /url\(public\/nova-demo-bg\.svg\)/);
+  });
+});
+
+test("apply: --json refusal is exactly one JSON object on stdout", async () => {
+  const copy = await markupCopy();
+  await initWithBrand(copy);
+  const before = await snapshot(copy);
+  let stdout = "";
+  let status = 0;
+  try {
+    stdout = execFileSync(process.execPath, [CLI, "apply", copy, "--brand", "brand.yaml", "--json"], {
+      encoding: "utf8",
+      cwd: ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    status = (error as { status?: number }).status ?? -1;
+    stdout = (error as { stdout?: string }).stdout ?? "";
+  }
+  assert.equal(status, 1);
+  const payload = JSON.parse(stdout) as { ok: boolean; error: string; danglingRefs: unknown[] };
+  assert.equal(payload.ok, false);
+  assert.match(payload.error, /refusing to write/);
+  assert.ok(Array.isArray(payload.danglingRefs) && payload.danglingRefs.length >= 3);
+  assert.deepEqual(await snapshot(copy), before, "refusal must not write");
+});
+
+test("apply: no-op second run reports written:false for assets and compose", async () => {
+  const copy = await workspace();
+  const source = path.join(path.dirname(copy), "brand-logo.svg");
+  await writeFile(source, '<svg xmlns="http://www.w3.org/2000/svg"><rect width="8" height="8" fill="#2563EB"/></svg>\n', "utf8");
+  const init = makeCtx(ROOT);
+  assert.equal(await initRun([copy, ...INIT_ARGS, "--logo", source], init.ctx), 0, init.errors.join("\n"));
+
+  const first = await applyJson(copy);
+  assert.equal(first.code, 0, first.errors.join("\n"));
+  assert.equal(first.payload.assets[0]?.written, true, "first run copies the asset");
+  assert.equal(first.payload.compose?.written, true, "first run writes the compose override");
+
+  const afterFirst = await snapshot(copy);
+  const second = await applyJson(copy);
+  assert.equal(second.code, 0, second.errors.join("\n"));
+  assert.deepEqual(second.payload.changed, []);
+  assert.equal(second.payload.assets[0]?.written, false, "identical bytes must not be rewritten");
+  assert.equal(second.payload.compose?.written, false, "identical compose must not be rewritten");
+  assert.equal(second.payload.renames.length, 0);
+  assert.deepEqual(await snapshot(copy), afterFirst);
 });

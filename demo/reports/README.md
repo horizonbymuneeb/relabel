@@ -43,7 +43,7 @@ node dist/cli.js report --input demo/reports/verify.json --out demo/reports/repo
 ```
 
 Result — `verify` exit **0**, **7 passed, 0 failed, 0 skipped**
-(`demo/reports/verify.json`, generated `2026-10-29T00:02:53Z`):
+(`demo/reports/verify.json`, generated `2026-10-29T00:33:53Z`):
 
 | check | status | detail |
 |---|---|---|

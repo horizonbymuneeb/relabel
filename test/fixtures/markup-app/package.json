@@ -1,0 +1,6 @@
+{
+  "name": "pulse-status",
+  "version": "0.1.0",
+  "description": "Pulse Status — markup asset-ref fixture for relabeld tests",
+  "license": "MIT"
+}

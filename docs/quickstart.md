@@ -253,8 +253,11 @@ PASS    favicon           HTTP 200, sha256 dc416a69… matches status.example.co
   image).
 - An implicit `/favicon.ico` 404 is tolerated in the console check and reported as
   `(ignored 1 implicit /favicon.ico 404)`; the favicon check itself still fails an explicit 404.
-- `brand-strings` ignores old-brand text on preserved license/copyright lines and on `brand.keep`
-  lines, and says how many it ignored in the detail; visible occurrences still fail.
+- `brand-strings` ignores old-brand text only on license/attribution lines (same rule as
+  `scan`/`apply`: `copyright`, `©`, `(c)` + 4-digit year, `SPDX-License-Identifier`,
+  `all rights reserved`, `licensed under`) and on `brand.keep` lines, reporting the ignored count in
+  the detail. Visible occurrences still fail, and a plain `license: Old Name` line is treated as stale
+  branding, not attribution.
 
 ## 6. Render the report
 
@@ -304,6 +307,7 @@ relabeld --json scan ./my-app
 | `favicon` fails with a hash mismatch | The served favicon is not the file `brand.yaml` points at; rebuild the app image or copy the asset. |
 | Overflow fails | Only positive overflow fails. `verify` reports `scrollWidth - innerWidth`; if the value is positive the page really does overflow at that viewport, so fix the layout or reduce width. |
 | `brand.yaml already exists` | Pass `--force` to `init`, or edit the existing spec. |
+| `brand-strings` flags a `license: Old Name` line | That is not a license line under the shared rule (only `copyright`, `©`, `(c) YYYY`, `SPDX-License-Identifier`, `all rights reserved`, `licensed under` are exempt); fix the value or add the line/string to `brand.keep`. |
 | `verify: cannot read brand spec` (exit 2) | Wrong path; `--brand` resolves against the cwd. |
 | `apply: brand file not found` | Run `init` first, or pass `--brand <path>`. |
 | `apply: recipe not found` | `--recipe` accepts a recipe id in the library, a path to `recipe.yaml`, or a directory; omit the flag to auto-detect from the app. |

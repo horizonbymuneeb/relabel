@@ -35,6 +35,17 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
+/** True for a safe repo-relative recipe path (no absolute paths / .. escapes). */
+export function isSafeRecipePath(value: string): boolean {
+  const raw = value.trim();
+  if (!raw) return false;
+  if (raw.startsWith("/") || raw.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(raw)) return false;
+  if (raw.includes("\u0000")) return false;
+  const segments = raw.split(/[\\/]/);
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) return false;
+  return true;
+}
+
 /** Structural validation against the Recipe contract. */
 export function validateRecipe(data: unknown): { recipe: Recipe | null; errors: string[] } {
   const errors: string[] = [];
@@ -77,6 +88,26 @@ export function validateRecipe(data: unknown): { recipe: Recipe | null; errors: 
         push(`assets[${index}].targets must be a non-empty array of paths`);
       }
     });
+  }
+
+  if (raw.renames !== undefined) {
+    if (!Array.isArray(raw.renames)) {
+      push("renames must be an array of {from,to}");
+    } else {
+      (raw.renames as unknown[]).forEach((entry, index) => {
+        if (!entry || typeof entry !== "object") {
+          push(`renames[${index}] must be a mapping with from/to`);
+          return;
+        }
+        const item = entry as Record<string, unknown>;
+        const from = typeof item.from === "string" ? item.from.trim() : "";
+        const to = typeof item.to === "string" ? item.to.trim() : "";
+        if (!from) push(`renames[${index}].from must be a non-empty string`);
+        else if (!isSafeRecipePath(from)) push(`renames[${index}].from must be a safe repo-relative path`);
+        if (!to) push(`renames[${index}].to must be a non-empty string`);
+        else if (!isSafeRecipePath(to)) push(`renames[${index}].to must be a safe repo-relative path`);
+      });
+    }
   }
 
   if (raw.env !== undefined) {
@@ -172,6 +203,7 @@ function recipeSummary(recipe: Recipe): Record<string, unknown> {
     name: recipe.name,
     upstream: recipe.upstream,
     strings: recipe.strings,
+    renames: recipe.renames ?? [],
     assets: recipe.assets,
     compose: recipe.compose ?? null,
     verify: recipe.verify ?? null,
@@ -190,6 +222,10 @@ function humanRecipe(recipe: Recipe): string[] {
     for (const asset of recipe.assets) {
       lines.push(`    ${asset.kind.padEnd(8)} → ${asset.targets.join(", ")}`);
     }
+  }
+  if (recipe.renames?.length) {
+    lines.push("  renames");
+    for (const rename of recipe.renames) lines.push(`    ${rename.from} → ${rename.to}`);
   }
   if (recipe.env?.length) {
     lines.push(`  env       ${recipe.env.map((entry) => entry.name).join(", ")}`);

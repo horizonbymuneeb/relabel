@@ -70,7 +70,7 @@ runs:
 
         if [ ! -s "$json_path" ]; then
           echo "::error::relabel verify produced no JSON proof (exit $code)"
-          exit "$code"
+          exit 1
         fi
         if [ "$code" -ne 0 ]; then
           echo "::group::relabel verify JSON"

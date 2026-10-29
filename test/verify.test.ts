@@ -740,19 +740,85 @@ test("brand-strings still fails for old-brand residue outside visible text", asy
   }
 });
 
-test("isAttributionLine recognises license/copyright lines and brand.keep entries", () => {
+test("isAttributionLine mirrors apply/scan's license-line rule and honours brand.keep", () => {
   for (const line of [
     "Copyright 2024 Pulse Status",
     "© 2024 Pulse Status. All rights reserved.",
     "(c) 2024 Pulse Status",
+    "Pulse Status (c) 2024",
     "SPDX-License-Identifier: MIT",
     "Licensed under the MIT License",
-    "License: MIT",
+    "All rights reserved.",
   ]) {
     assert.equal(isAttributionLine(line), true, line);
   }
+  // Broader than apply's rule => must NOT be exempt (would hide real stale branding):
+  assert.equal(isAttributionLine("Pulse Status (c) all rights"), false);
+  assert.equal(isAttributionLine("Pulse Status (c) no year"), false);
+  assert.equal(isAttributionLine("license: Pulse Status"), false);
+  assert.equal(isAttributionLine("SPDX-License: MIT"), false);
   assert.equal(isAttributionLine("Made by Pulse Status Labs", ["Made by Pulse Status Labs"]), true);
   assert.equal(isAttributionLine("Pulse Status", ["Made by Pulse Status Labs"]), false);
   assert.equal(isAttributionLine("Welcome to Pulse Status"), false);
   assert.equal(isAttributionLine("© 2024", []), true);
+});
+
+test("brand-strings ignores '(c) 2024'-style license lines but not '(c)' without a year", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-verify-c-year-"));
+  const fixture = await startFixture({ page: plainPage("", "<footer><p>Pulse Status (c) 2024</p></footer>") });
+  try {
+    const result = await verifyPage({
+      url: fixture.url,
+      brand: { name: "Nova Status", variants: ["Pulse Status"], palette: { primary: "#000" } },
+      brandDir: dir,
+      shotsDir: path.join(dir, "shots"),
+    });
+    const check = result.checks.find((c) => c.id === "brand-strings");
+    assert.ok(check);
+    assert.equal(check.status, "pass", check.detail);
+    assert.match(check.detail, /ignored 1 preserved license\/copyright\/keep line/);
+  } finally {
+    await fixture.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("brand-strings fails a '(c)' line without a year (apply would not preserve it)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-verify-c-noyear-"));
+  const fixture = await startFixture({ page: plainPage("", "<footer><p>Pulse Status (c) all rights</p></footer>") });
+  try {
+    const result = await verifyPage({
+      url: fixture.url,
+      brand: { name: "Nova Status", variants: ["Pulse Status"], palette: { primary: "#000" } },
+      brandDir: dir,
+      shotsDir: path.join(dir, "shots"),
+    });
+    const check = result.checks.find((c) => c.id === "brand-strings");
+    assert.ok(check);
+    assert.equal(check.status, "fail", check.detail);
+    assert.match(check.detail, /1 visible occurrence/);
+  } finally {
+    await fixture.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("brand-strings fails a generic 'license:' line containing the old brand", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "relabel-verify-license-colon-"));
+  const fixture = await startFixture({ page: plainPage("", "<footer><p>license: Pulse Status</p></footer>") });
+  try {
+    const result = await verifyPage({
+      url: fixture.url,
+      brand: { name: "Nova Status", variants: ["Pulse Status"], palette: { primary: "#000" } },
+      brandDir: dir,
+      shotsDir: path.join(dir, "shots"),
+    });
+    const check = result.checks.find((c) => c.id === "brand-strings");
+    assert.ok(check);
+    assert.equal(check.status, "fail", check.detail);
+    assert.match(check.detail, /1 visible occurrence/);
+  } finally {
+    await fixture.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

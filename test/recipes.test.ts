@@ -236,3 +236,82 @@ test("cli: recipe list/show work through the real CLI", () => {
   assert.equal(status, 1);
 });
 
+
+/* ------------------------------------------------------------------ */
+/* task-15: renames[] validation (docs promise)                       */
+/* ------------------------------------------------------------------ */
+
+const VALID_RECIPE_BASE = {
+  id: "demo-recipe",
+  name: "Demo Recipe",
+  upstream: "https://example.com/demo",
+  match: ["package.json"],
+  strings: ["Demo Brand"],
+  assets: [],
+};
+
+test("recipes: renames validation rejects malformed entries and unsafe paths", () => {
+  const notArray = validateRecipe({ ...VALID_RECIPE_BASE, renames: "nope" });
+  assert.ok(notArray.errors.some((error) => /renames must be an array/.test(error)), notArray.errors.join("; "));
+
+  const missingTo = validateRecipe({ ...VALID_RECIPE_BASE, renames: [{ from: "server/a.js" }] });
+  assert.ok(
+    missingTo.errors.some((error) => /renames\[0\]\.to must be a non-empty string/.test(error)),
+    missingTo.errors.join("; "),
+  );
+
+  const badEntry = validateRecipe({ ...VALID_RECIPE_BASE, renames: ["server/a.js"] });
+  assert.ok(
+    badEntry.errors.some((error) => /renames\[0\] must be a mapping/.test(error)),
+    badEntry.errors.join("; "),
+  );
+
+  const absolute = validateRecipe({ ...VALID_RECIPE_BASE, renames: [{ from: "/etc/passwd", to: "x/y" }] });
+  assert.ok(
+    absolute.errors.some((error) => /renames\[0\]\.from must be a safe repo-relative path/.test(error)),
+    absolute.errors.join("; "),
+  );
+
+  const escape = validateRecipe({ ...VALID_RECIPE_BASE, renames: [{ from: "server/../../escape.js", to: "x/y" }] });
+  assert.ok(
+    escape.errors.some((error) => /renames\[0\]\.from must be a safe repo-relative path/.test(error)),
+    escape.errors.join("; "),
+  );
+
+  const badTo = validateRecipe({ ...VALID_RECIPE_BASE, renames: [{ from: "server/a.js", to: "../escape" }] });
+  assert.ok(
+    badTo.errors.some((error) => /renames\[0\]\.to must be a safe repo-relative path/.test(error)),
+    badTo.errors.join("; "),
+  );
+
+  const ok = validateRecipe({
+    ...VALID_RECIPE_BASE,
+    renames: [{ from: "server/a.js", to: "server/{{slug}}-server.js" }],
+  });
+  assert.deepEqual(ok.errors, []);
+  assert.equal(ok.recipe?.renames?.length, 1);
+});
+
+test("recipes: recipe add rejects a recipe with invalid renames", async () => {
+  const library = await tempDir("relabel-library-renames-");
+  const source = await tempDir("relabel-source-renames-");
+  const invalid = [
+    ...UPTIME_KUMA_SAMPLE.split("\n"),
+    "renames:",
+    '  - from: "/etc/passwd"',
+    '    to: "../outside.js"',
+  ].join("\n");
+  await writeFile(path.join(source, "recipe.yaml"), invalid, "utf8");
+  const previous = process.env.RELABELD_RECIPES_DIR;
+  process.env.RELABELD_RECIPES_DIR = library;
+  try {
+    const ctx = makeCtx(ROOT);
+    assert.equal(await recipesRun(["add", source], ctx.ctx), 1);
+    const errors = ctx.errors.join("\n");
+    assert.match(errors, /renames\[0\]\.from must be a safe repo-relative path/);
+    assert.match(errors, /renames\[0\]\.to must be a safe repo-relative path/);
+  } finally {
+    if (previous === undefined) delete process.env.RELABELD_RECIPES_DIR;
+    else process.env.RELABELD_RECIPES_DIR = previous;
+  }
+});

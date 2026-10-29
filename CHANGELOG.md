@@ -13,10 +13,15 @@ first-class agent integration.
 - `init` — generate `brand.yaml` from a scan + flags.
 - `apply` — deterministic, idempotent patching: text strings (case-preserving, word-boundary),
   asset replacement, recipe-driven file renames, compose override; `--dry-run` writes nothing.
-  Docker image references (`FROM`, `image:`) are never rewritten implicitly.
-- `verify` — headless proof with 7 checks: brand strings, page title, console errors,
+  Docker image references (`FROM`, `image:`) are never rewritten implicitly. Refuses to write
+  (exit 1, atomic) when rewritten module/asset references would not resolve. Files that are
+  binary, non-UTF-8, or over the read limit are reported as skipped, never partially patched;
+  `--max-file-bytes` raises the limit.
+- `verify` — headless proof with 7 checks: brand strings (attribution/`keep`-aware),
+  page title, console errors (implicit `/favicon.ico` 404 ignored and counted),
   desktop overflow (1440×980), mobile overflow (390×844), screenshots, favicon hash
-  (http(s) and `data:` URIs). Exit 1 on failure.
+  (raw served HTML authoritative; http(s) and `data:` URIs). Exit 1 on failure;
+  skipped checks are reported, exit 0 means "no failures".
 - `report` — self-contained HTML report (inline CSS, base64 screenshots, light/dark).
 - `recipe` — list / show / add; validated YAML recipes.
 - `deploy` — render nginx vhost + optional Cloudflare DNS create + certbot command;
@@ -36,6 +41,7 @@ first-class agent integration.
 - GitHub Action: verify gate with check-id `fail-on` handling and report artifact.
 - Docker image: multi-stage build with Chromium for headless verification.
 - CI (Node 20/22) and npm publish workflow (tag guard + provenance).
+- Action pinned to `1.0.0` by default; `fail-on` accepts singular or plural check groups.
 
 ### Verified end-to-end
 

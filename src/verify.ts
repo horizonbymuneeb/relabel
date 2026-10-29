@@ -5,6 +5,7 @@ import path from "node:path";
 import { chromium, type Browser } from "playwright-core";
 import type { BrandSpec, CheckResult, Ctx, VerifyResult } from "./types.js";
 import { countOccurrences, ensureDir, loadYamlFile, nowIso, sha256 } from "./util.js";
+import { isLicenseLine } from "./scan.js";
 
 const VIEWPORTS = [
   { name: "desktop", width: 1440, height: 980 },
@@ -192,15 +193,17 @@ export function isImplicitFaviconNoise(text: string, url: string): boolean {
   }
 }
 
-const ATTRIBUTION_LINE_RE = /(copyright|©|\(c\)|all rights reserved|spdx-license|licensed under|license:)/i;
-
 /**
  * True when a rendered-text line is a preserved license/attribution line, or contains
  * one of the configured `brand.keep` entries. Such lines legitimately still contain
  * the upstream brand name after a correct white-label run.
+ *
+ * The license rule is shared with apply/scan (`isLicenseLine` from scan.ts), so verify
+ * can never ignore a visible line that apply would not preserve. Note `(c)` requires a
+ * 4-digit year there; `license:` on its own is not a license line.
  */
 export function isAttributionLine(line: string, keep: string[] = []): boolean {
-  if (ATTRIBUTION_LINE_RE.test(line)) return true;
+  if (isLicenseLine(line)) return true;
   const lower = line.toLowerCase();
   return keep.some((entry) => {
     const needle = entry.trim().toLowerCase();

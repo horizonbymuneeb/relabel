@@ -123,7 +123,7 @@ screenshots, and exits non-zero if any check failed. The check set is the defini
 
 | id | Pass condition |
 |---|---|
-| `brand-strings` | 0 visible occurrences of any old-brand `variants` entry in rendered text, the title, or page HTML (case-insensitive; text deduped across viewports). Copyright/SPDX lines and `brand.keep` lines are ignored and counted; unexplained HTML residue fails; fails when no variants are configured. |
+| `brand-strings` | 0 visible occurrences of any old-brand `variants` entry in rendered text, the title, or page HTML (case-insensitive; text deduped across viewports). A line is exempt only under the shared license/attribution rule (`copyright`, `©`, `(c)` + 4-digit year, `SPDX-License-Identifier`, `all rights reserved`, `licensed under`) or if it contains a `brand.keep` entry; other `license:` text is stale branding and fails. Fails when no variants are configured. |
 | `brand-title` | `document.title` contains the new brand name at both viewports. |
 | `console-errors` | 0 `pageerror` events and 0 console messages of type `error`. Only Chromium's implicit `/favicon.ico` resource 404 is ignored (counted in the detail); any other 404, page error, or console error fails. |
 | `overflow-desktop` | `scrollWidth - innerWidth <= 0` at 1440x980 (only positive overflow fails). |
@@ -177,6 +177,7 @@ steps: [docs/recipe-spec.md](docs/recipe-spec.md).
 
 ```bash
 relabeld deploy --brand brand.yaml --dry-run --port 3001   # print the vhost + commands, write nothing
+# note: --dry-run may query a public-IP lookup service when Cloudflare env vars are set (no writes)
 relabeld deploy --brand brand.yaml --apply --port 3001     # write vhost, enable, reload nginx
 relabeld deploy --brand brand.yaml --apply --certbot       # also run the printed certbot command
 relabeld deploy --brand brand.yaml --apply --force         # rewrite a certbot-managed TLS vhost

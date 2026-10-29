@@ -46,7 +46,7 @@ The demo's gate run is stored as raw JSON and as the rendered report:
 | Demo run notes | [demo/reports/README.md](https://github.com/horizonbymuneeb/relabel/blob/main/demo/reports/README.md) |
 | Brand spec used | [demo/reports/brand.yaml](https://github.com/horizonbymuneeb/relabel/blob/main/demo/reports/brand.yaml) |
 
-The committed run (generated `2026-10-29T00:02:53Z`) reports **7 passed, 0 failed, 0 skipped**:
+The committed run (generated `2026-10-29T00:33:53Z`) reports **7 passed, 0 failed, 0 skipped**:
 
 | Check | Status |
 |---|---|
