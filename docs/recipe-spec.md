@@ -5,7 +5,7 @@ knowledge a deterministic white-label needs: which strings identify the upstream
 targets to replace, file renames that keep rewritten references resolving, env defaults, compose
 service/port, and verification defaults.
 
-What consumes a recipe in v1.0.0:
+What consumes a recipe in v1.0.2:
 
 - `apply` reads `renames` (file renames after the text patch) and the `files:` rule paths (an opt-in
   that allows rewriting docker image references of those files). It auto-detects the recipe from the
@@ -85,7 +85,7 @@ notes:
 - Every recipe loaded by `recipe list`, `recipe show`, or `recipe add` is validated: required fields
   (`id`, `name`, `upstream`, `match`, `strings`, `assets`) must be present and typed, `id` is
   kebab-case, `upstream` an http(s) URL, `assets[].kind` one of `logo|favicon|og-image`, and
-  `renames[]` entries need non-empty `from`/`to`. Unknown top-level keys are tolerated in v1.0.0;
+  `renames[]` entries need non-empty `from`/`to`. Unknown top-level keys are tolerated in v1.0.2;
   there is no standalone `validate` subcommand.
 - The recipe library root is `recipes/` next to the installed package. `RELABELD_RECIPES_DIR`
   overrides it.
@@ -101,7 +101,7 @@ notes:
   rewritten inside a file listed in the recipe's `files:` rules.
 - `env` is validated and recorded. `apply` writes only `APP_NAME: <brand.name>` from `brand.yaml` into
   the generated `docker-compose.relabel.yml`; recipe `env`, `compose`, and `verify` keys are not used
-  by other commands in v1.0.0.
+  by other commands in v1.0.2.
 - Recipes are data only: no executable hooks. A `hooks:` key is intentionally absent and unimplemented,
   so a pulled recipe cannot smuggle code into the CLI.
 

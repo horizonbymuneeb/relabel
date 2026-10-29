@@ -2,6 +2,12 @@
 
 All notable changes to `relabeld`. Built in versioned milestones.
 
+## 1.0.2 — docs and packaging polish
+
+- README: npm package name, package URL, `npx relabeld` quick path, package contents, npm/license/node/docker badges.
+- Repository default branch renamed to `main`; all absolute docs links now resolve.
+- Version references in README/docs updated to 1.0.2 (no behaviour change).
+
 ## 1.0.1 — hardening
 
 - `apply` ref guard now covers HTML/CSS/SVG asset references (`href`, `src`, `url()`), including

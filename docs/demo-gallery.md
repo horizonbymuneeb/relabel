@@ -1,7 +1,7 @@
 # Demo gallery
 
 A worked example of the full loop on a real app: **Uptime Kuma 1.23.17**, rebuilt from source and
-white-labelled as **Nova Status**, then verified by `relabeld` v1.0.0 in headless Chromium. The
+white-labelled as **Nova Status**, then verified by `relabeld` v1.0.2 in headless Chromium. The
 static page is [demo/site/index.html](https://github.com/horizonbymuneeb/relabel/blob/main/demo/site/index.html);
 it is self-contained and links only files in this repository. `demo/` is not part of the npm
 package, so the links below point at the GitHub tree.

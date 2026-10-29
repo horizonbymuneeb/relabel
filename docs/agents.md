@@ -53,7 +53,7 @@ Or with a global install: `"command": "relabeld"`, `"args": ["mcp"]`. Requires N
 |---|---|---|
 | `relabel_scan` | `root?` (default `.`), `cwd?` | `ScanResult` JSON. Read-only. |
 | `relabel_init` | `name` (required), `domain?`, `from?`, `force?`, `cwd?` | `{ path, brand }` for the written `brand.yaml`. `from` is the source directory (same as the CLI positional). Refuses to overwrite without `force`. |
-| `relabel_apply` | `dryRun?`, `cwd?` | `{ changed, skipped, renames, ... }` plan or the applied result. `dryRun` writes nothing. A recipe is auto-detected from the app (there is no MCP argument for it in v1.0.0). |
+| `relabel_apply` | `dryRun?`, `cwd?` | `{ changed, skipped, renames, ... }` plan or the applied result. `dryRun` writes nothing. A recipe is auto-detected from the app (there is no MCP argument for it in v1.0.2). |
 | `relabel_verify` | `url` (required), `brand?`, `shots?`, `cdp?`, `cwd?` | `VerifyResult` JSON. A run with `summary.failed > 0` comes back as an MCP error result (`isError: true`) with the CLI output attached, so the client cannot mistake a failed gate for success. |
 | `relabel_report` | `input`, `out` (both required), `cwd?` | `{ out, bytes, images, summary, generatedAt }`. |
 

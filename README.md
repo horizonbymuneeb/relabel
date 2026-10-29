@@ -1,5 +1,10 @@
 # relabeld
 
+[![npm](https://img.shields.io/npm/v/relabeld?color=2563EB)](https://www.npmjs.com/package/relabeld)
+[![license](https://img.shields.io/badge/license-MIT-2563EB)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D20-2563EB)](package.json)
+[![docker](https://img.shields.io/badge/docker-ghcr.io-2563EB)](Dockerfile)
+
 White-label a self-hosted app from one `brand.yaml`, then prove the result in a headless browser.
 
 `relabeld` scans an app for the places its old name lives (strings, configs, docs, CI, env defaults,
@@ -17,7 +22,7 @@ relabeld verify --url https://status.example.com --brand brand.yaml --json
 relabeld report --input verify.json --out report.html
 ```
 
-Status: v1.0.0. Every command in the table below is implemented: `scan`, `init`, `apply`, `verify`,
+Status: v1.0.2. Every command in the table below is implemented: `scan`, `init`, `apply`, `verify`,
 `report`, `recipe`, `deploy`, `doctor`, `mcp`, and `skill`. The test suite and the commands shown in
 this README exercise the same code paths. Release notes: [CHANGELOG.md](https://github.com/horizonbymuneeb/relabel/blob/main/CHANGELOG.md).
 
@@ -47,12 +52,25 @@ this README exercise the same code paths. Release notes: [CHANGELOG.md](https://
 
 ## Install
 
-From npm:
+Package: **`relabeld`** on npm — <https://www.npmjs.com/package/relabeld> (latest `1.0.2`).
+
+No clone and no global install needed — `npx` runs the published package directly:
+
+```bash
+npx relabeld@latest --version
+npx relabeld scan ./app --json
+```
+
+Or install it globally:
 
 ```bash
 npm install -g relabeld
 relabeld --version
 ```
+
+The published package (27 files, ~82 kB packed) contains the compiled CLI (`dist/`), the recipe
+library (`recipes/`), the bundled agent skill (`skills/`), reference docs (`docs/`), `README.md`
+and `LICENSE`. Run it from the package, from a container, or through the bundled Dockerfile.
 
 From source (this repository):
 

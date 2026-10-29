@@ -1,7 +1,7 @@
 # Quickstart
 
 This walkthrough takes a self-hosted app from "wearing the upstream name" to "verified white-label"
-with the commands that exist in v1.0.0. Every command below was run against a fixture app and a
+with the commands that exist in v1.0.2. Every command below was run against a fixture app and a
 local HTTP server; the shape of the output is what you should see.
 
 ## 0. Prerequisites
